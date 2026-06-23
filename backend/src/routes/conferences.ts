@@ -1,0 +1,107 @@
+import { Router } from 'express';
+import { PrismaClient } from '@prisma/client';
+import { v4 as uuidv4 } from 'uuid';
+import { requireAuth, requireAdmin, AuthRequest } from '../middleware/auth';
+import { createLiveKitRoom, deleteLiveKitRoom, generateLiveKitToken } from '../lib/livekit';
+
+const router = Router();
+const prisma = new PrismaClient();
+export const conferencesRouter = router;
+
+// POST /api/conferences — admin creates conference
+router.post('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  const { title, description } = req.body;
+  if (!title) return res.status(400).json({ error: 'Title required' });
+
+  const livekitRoom = `fc-${uuidv4().slice(0, 8)}`;
+  await createLiveKitRoom(livekitRoom);
+
+  const conference = await prisma.conference.create({
+    data: {
+      title,
+      description,
+      adminId: req.user!.userId,
+      livekitRoom,
+    },
+  });
+
+  res.json(conference);
+});
+
+// GET /api/conferences — list conferences (filtered by user role)
+router.get('/', requireAuth, async (req: AuthRequest, res) => {
+  const { userId, role } = req.user!;
+
+  let conferences;
+
+  if (role === 'ADMIN') {
+    // Admin sees all their conferences
+    conferences = await prisma.conference.findMany({
+      where: { adminId: userId },
+      include: { participants: { include: { user: { select: { id: true, name: true, role: true } } } } },
+      orderBy: { createdAt: 'desc' },
+    });
+  } else {
+    // Reporter/anchor sees conferences they are added to
+    conferences = await prisma.conference.findMany({
+      where: {
+        participants: { some: { userId } },
+        status: { not: 'ENDED' },
+      },
+      include: { participants: { include: { user: { select: { id: true, name: true, role: true } } } } },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  res.json(conferences);
+});
+
+// GET /api/conferences/:id
+router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
+  const conference = await prisma.conference.findUnique({
+    where: { id: req.params.id },
+    include: {
+      participants: {
+        include: { user: { select: { id: true, name: true, role: true } } },
+      },
+      admin: { select: { id: true, name: true } },
+    },
+  });
+  if (!conference) return res.status(404).json({ error: 'Not found' });
+  res.json(conference);
+});
+
+// POST /api/conferences/:id/livekit-token — get LiveKit join token for WebRTC
+router.post('/:id/livekit-token', requireAuth, async (req: AuthRequest, res) => {
+  const { userId, role } = req.user!;
+
+  const conference = await prisma.conference.findUnique({ where: { id: req.params.id } });
+  if (!conference) return res.status(404).json({ error: 'Not found' });
+
+  // Verify user is a participant
+  const participant = await prisma.participant.findUnique({
+    where: { conferenceId_userId: { conferenceId: req.params.id, userId } },
+    include: { user: true },
+  });
+  if (!participant && role !== 'ADMIN') {
+    return res.status(403).json({ error: 'Not a participant of this conference' });
+  }
+
+  const token = await generateLiveKitToken(
+    conference.livekitRoom,
+    userId,
+    participant?.user.name || 'Admin',
+  );
+
+  res.json({ token, room: conference.livekitRoom });
+});
+
+// PATCH /api/conferences/:id/end — admin ends conference
+router.patch('/:id/end', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  const conference = await prisma.conference.update({
+    where: { id: req.params.id },
+    data: { status: 'ENDED', endedAt: new Date() },
+  });
+  await deleteLiveKitRoom(conference.livekitRoom);
+  res.json(conference);
+});

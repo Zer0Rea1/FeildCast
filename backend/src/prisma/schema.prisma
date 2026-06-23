@@ -1,0 +1,88 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String        @id @default(cuid())
+  name            String
+  email           String        @unique
+  passwordHash    String
+  role            UserRole      @default(REPORTER)
+  expoPushToken   String?
+  createdAt       DateTime      @default(now())
+  conferences     Participant[]
+  adminOf         Conference[]  @relation("AdminConferences")
+}
+
+model Conference {
+  id           String        @id @default(cuid())
+  title        String
+  description  String?
+  adminId      String
+  admin        User          @relation("AdminConferences", fields: [adminId], references: [id])
+  livekitRoom  String        @unique
+  status       ConferenceStatus @default(PENDING)
+  createdAt    DateTime      @default(now())
+  startedAt    DateTime?
+  endedAt      DateTime?
+  participants Participant[]
+  sessions     StreamSession[]
+}
+
+model Participant {
+  id           String      @id @default(cuid())
+  conferenceId String
+  conference   Conference  @relation(fields: [conferenceId], references: [id])
+  userId       String
+  user         User        @relation(fields: [userId], references: [id])
+  role         ParticipantRole
+  resolution   String?
+  bitrate      Int?
+  fps          Int?
+  streamId     String?
+  joinedAt     DateTime?
+  leftAt       DateTime?
+  status       ParticipantStatus @default(INVITED)
+
+  @@unique([conferenceId, userId])
+}
+
+model StreamSession {
+  id           String     @id @default(cuid())
+  conferenceId String
+  conference   Conference @relation(fields: [conferenceId], references: [id])
+  participantId String
+  startedAt    DateTime   @default(now())
+  endedAt      DateTime?
+  bytesSent    BigInt     @default(0)
+  ffmpegPid    Int?
+}
+
+enum UserRole {
+  ADMIN
+  REPORTER
+  ANCHOR
+}
+
+enum ParticipantRole {
+  REPORTER
+  ANCHOR
+}
+
+enum ConferenceStatus {
+  PENDING
+  LIVE
+  ENDED
+}
+
+enum ParticipantStatus {
+  INVITED
+  JOINED
+  LEFT
+}
