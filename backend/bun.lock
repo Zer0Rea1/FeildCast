@@ -13,7 +13,7 @@
         "express": "^4.21.2",
         "helmet": "^8.0.0",
         "jsonwebtoken": "^9.0.2",
-        "livekit-server-sdk": "^2.9.1",
+        "livekit-server-sdk": "^2.15.5",
         "morgan": "^1.10.0",
         "prisma": "^6.9.0",
         "uuid": "^11.1.0",

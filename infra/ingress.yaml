@@ -1,0 +1,12 @@
+api_key: YOUR_LIVEKIT_API_KEY       # same key as livekit.yaml
+api_secret: YOUR_LIVEKIT_API_SECRET # same secret as livekit.yaml
+ws_url: ws://localhost:7880          # your LiveKit server
+
+# RTMP input port — FFmpeg pushes to this
+rtmp_port: 1935
+
+# HTTP port for ingress API
+http_port: 8080
+
+logging:
+  level: info

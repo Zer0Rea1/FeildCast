@@ -58,8 +58,9 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
 
 // GET /api/conferences/:id
 router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
+  const id = req.params.id as string;
   const conference = await prisma.conference.findUnique({
-    where: { id: req.params.id },
+    where: { id },
     include: {
       participants: {
         include: { user: { select: { id: true, name: true, role: true } } },
@@ -73,33 +74,44 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
 
 // POST /api/conferences/:id/livekit-token — get LiveKit join token for WebRTC
 router.post('/:id/livekit-token', requireAuth, async (req: AuthRequest, res) => {
+  const id = req.params.id as string;
   const { userId, role } = req.user!;
 
-  const conference = await prisma.conference.findUnique({ where: { id: req.params.id } });
+  const conference = await prisma.conference.findUnique({ where: { id } });
   if (!conference) return res.status(404).json({ error: 'Not found' });
 
   // Verify user is a participant
   const participant = await prisma.participant.findUnique({
-    where: { conferenceId_userId: { conferenceId: req.params.id, userId } },
+    where: { conferenceId_userId: { conferenceId: id, userId } },
     include: { user: true },
   });
   if (!participant && role !== 'ADMIN') {
     return res.status(403).json({ error: 'Not a participant of this conference' });
   }
 
+  const participantRole = participant?.role || 'ANCHOR';
+  const audioOnly = participantRole === 'REPORTER';
+
   const token = await generateLiveKitToken(
     conference.livekitRoom,
     userId,
     participant?.user.name || 'Admin',
+    audioOnly,
   );
 
-  res.json({ token, room: conference.livekitRoom });
+  res.json({
+    token,
+    room: conference.livekitRoom,
+    audioOnly,
+    livekitUrl: process.env.LIVEKIT_PUBLIC_URL || 'wss://livekit.yourdomain.com',
+  });
 });
 
 // PATCH /api/conferences/:id/end — admin ends conference
 router.patch('/:id/end', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  const id = req.params.id as string;
   const conference = await prisma.conference.update({
-    where: { id: req.params.id },
+    where: { id },
     data: { status: 'ENDED', endedAt: new Date() },
   });
   await deleteLiveKitRoom(conference.livekitRoom);

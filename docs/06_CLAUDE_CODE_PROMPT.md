@@ -171,3 +171,26 @@ Create all infrastructure files from 05_INFRASTRUCTURE.md:
 - infra/nginx.conf — includes WebSocket upgrade on /stream, HLS proxy, LiveKit proxy
 - backend/Dockerfile — node:20-bookworm-slim base, installs FFmpeg via apt, verifies SRT support
 ```
+
+---
+
+## Updated Master Prompt (includes new architecture + all screens)
+
+```
+Read these additional docs alongside the original 6:
+- 07_NEW_ARCHITECTURE.md  — LiveKit Ingress setup, updated srtBridge.ts with 3 FFmpeg outputs,
+                            updated livekit.ts with IngressClient, reporter audio-only LiveKit join
+- 08_MISSING_SCREENS.md   — All remaining screens: app _layout.tsx, anchor home, admin home,
+                            admin create (mobile), dashboard Login, Layout, ConferenceDetail
+
+Key rules for new architecture:
+- Reporter phone sends video via WebSocket ONLY — never via LiveKit directly
+- Reporter joins LiveKit in audio-only mode (canPublish: false for video)
+- FFmpeg uses tee muxer for 3 simultaneous outputs: SRT + RTMP (LiveKit Ingress) + HLS
+- createReporterIngress() is called BEFORE spawning FFmpeg in srtBridge.ts
+- deleteReporterIngress() is called on WebSocket close
+- If Ingress creation fails, continue with SRT + HLS only (non-fatal fallback)
+- Anchor app is unchanged — it sees reporter video via LiveKit Ingress, hears reporter audio directly
+- Add livekit-ingress service to docker-compose.yml
+- Open port 1935 (RTMP) and 8080 (Ingress API) in firewall
+```

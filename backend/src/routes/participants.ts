@@ -9,11 +9,12 @@ export const participantsRouter = router;
 
 // POST /api/conferences/:id/participants — admin adds a user to a conference
 router.post('/:id/participants', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  const id = req.params.id as string;
   const { userId, role, resolution, bitrate, fps } = req.body;
 
   if (!userId || !role) return res.status(400).json({ error: 'userId and role required' });
 
-  const conference = await prisma.conference.findUnique({ where: { id: req.params.id } });
+  const conference = await prisma.conference.findUnique({ where: { id } });
   if (!conference) return res.status(404).json({ error: 'Conference not found' });
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -21,7 +22,7 @@ router.post('/:id/participants', requireAuth, requireAdmin, async (req: AuthRequ
 
   const participant = await prisma.participant.create({
     data: {
-      conferenceId: req.params.id,
+      conferenceId: id,
       userId,
       role,
       resolution: resolution || '1280x720',
@@ -45,11 +46,13 @@ router.post('/:id/participants', requireAuth, requireAdmin, async (req: AuthRequ
 
 // DELETE /api/conferences/:id/participants/:userId — admin removes participant
 router.delete('/:id/participants/:userId', requireAuth, requireAdmin, async (req, res) => {
+  const id = req.params.id as string;
+  const userId = req.params.userId as string;
   await prisma.participant.delete({
     where: {
       conferenceId_userId: {
-        conferenceId: req.params.id,
-        userId: req.params.userId,
+        conferenceId: id,
+        userId,
       },
     },
   });
@@ -58,24 +61,25 @@ router.delete('/:id/participants/:userId', requireAuth, requireAdmin, async (req
 
 // PATCH /api/conferences/:id/participants/join — reporter/anchor joins conference
 router.patch('/:id/participants/join', requireAuth, async (req: AuthRequest, res) => {
+  const id = req.params.id as string;
   const { userId } = req.user!;
 
   const participant = await prisma.participant.findUnique({
-    where: { conferenceId_userId: { conferenceId: req.params.id, userId } },
+    where: { conferenceId_userId: { conferenceId: id, userId } },
     include: { conference: true },
   });
 
   if (!participant) return res.status(403).json({ error: 'Not a participant of this conference' });
 
   await prisma.participant.update({
-    where: { conferenceId_userId: { conferenceId: req.params.id, userId } },
+    where: { conferenceId_userId: { conferenceId: id, userId } },
     data: { status: 'JOINED', joinedAt: new Date() },
   });
 
   // Mark conference as LIVE when first participant joins
   if (participant.conference.status === 'PENDING') {
     await prisma.conference.update({
-      where: { id: req.params.id },
+      where: { id },
       data: { status: 'LIVE', startedAt: new Date() },
     });
   }
