@@ -30,7 +30,7 @@ export async function createReporterIngress(
   const options: CreateIngressOptions = {
     name:            participantName,
     roomName,
-    participantIdentity: participantId,
+    participantIdentity: participantId + '-ingress',
     participantName,
   };
 
@@ -89,7 +89,7 @@ export async function generateLiveKitToken(
   token.addGrant({
     roomJoin: true,
     room: roomName,
-    canPublish: !audioOnly,
+    canPublish: true,
     canSubscribe: true,
     canPublishData: true,
   });

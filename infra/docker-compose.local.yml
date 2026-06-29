@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fieldcast
+      POSTGRES_USER: fieldcast
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fieldcast"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+    networks:
+      - internal
+      - external
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://fieldcast:${DB_PASSWORD}@db:5432/fieldcast
+      JWT_SECRET: ${JWT_SECRET}
+      SRT_SERVER_HOST: ${SRT_SERVER_HOST}
+      SRT_SERVER_PORT: ${SRT_SERVER_PORT}
+      SRT_LATENCY_MS: ${SRT_LATENCY_MS:-200}
+      HLS_OUTPUT_DIR: /var/www/hls
+      LIVEKIT_HOST: http://livekit:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      PORT: 3000
+      CLIENT_URL: http://localhost
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - hls-data:/var/www/hls
+    ports:
+      - "3000:3000"
+    networks:
+      - internal
+      - external
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ../dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    networks:
+      - external
+    restart: unless-stopped
+
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-60000:50000-60000/udp"
+    networks:
+      - internal
+      - external
+    restart: unless-stopped
+
+  livekit-ingress:
+    image: livekit/ingress:latest
+    command: --config /etc/ingress.yaml
+    volumes:
+      - ./ingress.yaml:/etc/ingress.yaml
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "1935:1935"
+      - "8080:8080"
+    depends_on:
+      - livekit
+    networks:
+      - internal
+      - external
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  hls-data:
+
+networks:
+  internal:
+    internal: true
+  external:

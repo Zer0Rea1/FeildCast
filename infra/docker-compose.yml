@@ -1,11 +1,12 @@
-version: '3.8'
-
 services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: fieldcast
-      POSTGRES_USER: fieldcast
+      POSTGRES_DB:       fieldcast
+      POSTGRES_USER:     fieldcast
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -16,59 +17,133 @@ services:
       retries: 5
     networks:
       - internal
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
 
+  # ── Backend (Node.js + FFmpeg) ───────────────────────────────────────────
   backend:
     build:
       context: ../backend
       dockerfile: Dockerfile
+    restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://fieldcast:${DB_PASSWORD}@db:5432/fieldcast
-      JWT_SECRET: ${JWT_SECRET}
-      SRT_SERVER_HOST: ${SRT_SERVER_HOST}
-      SRT_SERVER_PORT: ${SRT_SERVER_PORT}
-      SRT_LATENCY_MS: ${SRT_LATENCY_MS:-200}
-      HLS_OUTPUT_DIR: /var/www/hls
-      LIVEKIT_HOST: http://livekit:7880
-      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
-      PORT: 3000
-      CLIENT_URL: https://admin.yourdomain.com
+      DATABASE_URL:          postgresql://fieldcast:${DB_PASSWORD}@db:5432/fieldcast
+      JWT_SECRET:            ${JWT_SECRET}
+      SRT_SERVER_HOST:       ${SRT_SERVER_HOST}
+      SRT_SERVER_PORT:       ${SRT_SERVER_PORT:-9998}
+      SRT_LATENCY_MS:        ${SRT_LATENCY_MS:-200}
+      HLS_OUTPUT_DIR:        /var/www/hls
+      LIVEKIT_HOST:          http://livekit:7880
+      LIVEKIT_INGRESS_HOST:  http://livekit-ingress:8080
+      LIVEKIT_API_KEY:       ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET:    ${LIVEKIT_API_SECRET}
+      LIVEKIT_PUBLIC_URL:    wss://livekit.${DOMAIN}
+      PORT:                  3000
+      CLIENT_URL:            https://${DOMAIN}
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - hls-data:/var/www/hls
-    ports:
-      - "3000:3000"
     networks:
       - internal
       - external
     restart: unless-stopped
+    # Backend memory must cover Node.js + all FFmpeg child processes.
+    # Each active reporter stream spawns one FFmpeg using ~150-250MB.
+    # Formula: 400MB base + (max_reporters * 250MB)
+    # For 5 reporters: ~1.6GB. Set to 2GB for headroom.
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 256M
 
-  dashboard:
+  # ── Web Client (React SPA served by nginx) ───────────────────────────────
+  web-client:
     build:
-      context: ../dashboard
+      context: ../web-client
       dockerfile: Dockerfile
+      args:
+        VITE_LIVEKIT_URL: wss://livekit.${DOMAIN}
+        VITE_API_URL:     ""
+        VITE_WS_URL:      ""
+    restart: unless-stopped
     networks:
       - external
-    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 32M
 
+  # ── LiveKit SFU (WebRTC signaling + media relay) ─────────────────────────
   livekit:
     image: livekit/livekit-server:latest
+    restart: unless-stopped
+    # Inject API keys from env vars — livekit.yaml uses ${VAR} expansion
+    environment:
+      LIVEKIT_API_KEY:    ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
     command: --config /etc/livekit.yaml
     volumes:
-      - ./livekit.yaml:/etc/livekit.yaml
+      - ./livekit.yaml:/etc/livekit.yaml:ro
     ports:
+      # Signaling (proxied by nginx for WSS)
       - "7880:7880"
+      # RTC TCP fallback for WebRTC
       - "7881:7881"
+      # WebRTC UDP media — must be direct (cannot go through nginx)
       - "50000-60000:50000-60000/udp"
     networks:
       - internal
       - external
-    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # LiveKit (Go) is memory-efficient. Each participant ~15-30MB.
+          # 10 participants max = ~300MB + overhead = 768MB total
+          memory: 768M
+        reservations:
+          memory: 128M
 
+  # ── LiveKit Ingress (RTMP → LiveKit room) ────────────────────────────────
+  livekit-ingress:
+    image: livekit/ingress:latest
+    restart: unless-stopped
+    environment:
+      LIVEKIT_API_KEY:    ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+    command: --config /etc/ingress.yaml
+    volumes:
+      - ./ingress.yaml:/etc/ingress.yaml:ro
+    ports:
+      - "1935:1935"   # RTMP input from FFmpeg
+      - "8080:8080"   # Ingress management API
+    depends_on:
+      - livekit
+    networks:
+      - internal
+      - external
+    deploy:
+      resources:
+        limits:
+          # Ingress runs FFmpeg per stream for RTMP→WebRTC transcoding
+          # Each stream ~150MB. For 5 streams: ~750MB + 200MB overhead
+          memory: 1G
+        reservations:
+          memory: 128M
+
+  # ── Nginx (SSL termination + reverse proxy) ──────────────────────────────
   nginx:
-    image: nginx:alpine
+    image: nginx:1.27-alpine
+    restart: unless-stopped
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
@@ -77,16 +152,29 @@ services:
       - "443:443"
     depends_on:
       - backend
-      - dashboard
+      - web-client
+      - livekit
     networks:
       - external
-    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
 
+# ── Volumes ──────────────────────────────────────────────────────────────────
 volumes:
   pgdata:
+    driver: local
   hls-data:
+    driver: local
 
+# ── Networks ─────────────────────────────────────────────────────────────────
 networks:
+  # internal: services talk to each other, NOT exposed to the internet
   internal:
     internal: true
+  # external: services that nginx routes to, and LiveKit UDP media ports
   external:
+    driver: bridge
