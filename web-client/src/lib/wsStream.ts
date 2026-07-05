@@ -22,9 +22,11 @@ export class SrtStreamer {
     Object.assign(this, callbacks);
   }
 
-  async start(token: string, conferenceId: string, stream: MediaStream, bitrate: number) {
-    // Build WebSocket URL with auth token and conferenceId
-    const wsUrl = `${WS_URL}?token=${encodeURIComponent(token)}&conferenceId=${conferenceId}`;
+  async start(token: string, conferenceId: string, stream: MediaStream, bitrate: number, directPublish = false) {
+    // Build WebSocket URL with auth token and conferenceId.
+    // directPublish=1 tells the backend the reporter publishes video to LiveKit themselves (dual mode),
+    // so the backend skips creating a LiveKit Ingress.
+    const wsUrl = `${WS_URL}?token=${encodeURIComponent(token)}&conferenceId=${conferenceId}${directPublish ? '&directPublish=1' : ''}`;
     this.ws = new WebSocket(wsUrl);
     this.ws.binaryType = 'arraybuffer';
 

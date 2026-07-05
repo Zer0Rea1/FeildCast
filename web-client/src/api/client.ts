@@ -43,6 +43,7 @@ export const conferencesApi = {
   create: (title: string, description?: string) =>
     api.post('/conferences', { title, description }),
   end: (id: string) => api.patch(`/conferences/${id}/end`),
+  getStreams: (id: string) => api.get(`/conferences/${id}/streams`),
 };
 
 export const participantsApi = {

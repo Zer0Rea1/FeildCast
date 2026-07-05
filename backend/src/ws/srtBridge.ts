@@ -19,6 +19,9 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
   const query        = url.parse(req.url || '', true).query;
   const token        = query.token        as string;
   const conferenceId = query.conferenceId as string;
+  // When true, the reporter is publishing their camera to LiveKit directly (dual mode),
+  // so we DON'T create a LiveKit Ingress — that would make them appear twice in the room.
+  const directPublish = query.directPublish === '1' || query.directPublish === 'true';
 
   if (!token || !conferenceId) {
     ws.send(JSON.stringify({ type: 'error', message: 'token and conferenceId required' }));
@@ -65,16 +68,22 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
   //    FFmpeg will push RTMP to this URL — LiveKit puts it in the conference room
   //    so the anchor can see the reporter without the phone uploading twice
   let ingressInfo: { ingressId: string; rtmpUrl: string; streamKey: string } | null = null;
-  try {
-    ingressInfo = await createReporterIngress(
-      participant.conference.livekitRoom,
-      userId,
-      participant.user.name,
-    );
-    console.log(`[Bridge] Created LiveKit Ingress for ${participant.user.name}: ${ingressInfo.rtmpUrl}`);
-  } catch (err) {
-    // Ingress failure is non-fatal — SRT broadcast still works without it
-    console.warn(`[Bridge] LiveKit Ingress creation failed: ${err}. Continuing without it.`);
+  if (directPublish) {
+    // Dual mode: reporter's phone publishes camera to LiveKit itself via WebRTC.
+    // Skip Ingress entirely — FFmpeg will only tee to SRT + HLS.
+    console.log(`[Bridge] ${participant.user.name} in DUAL mode — reporter publishes to LiveKit directly, skipping Ingress`);
+  } else {
+    try {
+      ingressInfo = await createReporterIngress(
+        participant.conference.livekitRoom,
+        userId,
+        participant.user.name,
+      );
+      console.log(`[Bridge] Created LiveKit Ingress for ${participant.user.name}: ${ingressInfo.rtmpUrl}`);
+    } catch (err) {
+      // Ingress failure is non-fatal — SRT broadcast still works without it
+      console.warn(`[Bridge] LiveKit Ingress creation failed: ${err}. Continuing without it.`);
+    }
   }
 
   // 6. Save streamId to DB
@@ -164,6 +173,13 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
   const ffmpeg = spawn('ffmpeg', ffmpegArgs);
   activeStreams.set(streamKey, ffmpeg);
 
+  // Suppress EPIPE — happens when a WS message arrives just after FFmpeg exits
+  ffmpeg.stdin.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code !== 'EPIPE') {
+      console.error(`[Bridge:${streamId.slice(0, 14)}] stdin error: ${err.message}`);
+    }
+  });
+
   ffmpeg.stderr.on('data', (data: Buffer) => {
     const line = data.toString().trim().slice(0, 200);
     if (line) console.log(`[FFmpeg:${streamId.slice(0, 14)}] ${line}`);
@@ -188,8 +204,12 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
   ws.on('message', (data: Buffer | ArrayBuffer) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     if (ffmpeg.stdin.writable) {
-      ffmpeg.stdin.write(buf);
-      bytesSent += buf.length;
+      try {
+        ffmpeg.stdin.write(buf);
+        bytesSent += buf.length;
+      } catch {
+        // EPIPE — FFmpeg stdin closed between the writable check and the write; safe to ignore
+      }
     }
   });
 

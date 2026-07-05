@@ -6,6 +6,15 @@ import { conferencesApi, participantsApi, usersApi } from '../api/client';
 import HLSPlayer from '../components/HLSPlayer';
 import AdminBroadcastMonitor from '../components/AdminBroadcastMonitor';
 
+interface StreamInfo {
+  reporterName: string;
+  streamId:     string | null;
+  status:       string;
+  resolution:   string | null;
+  bitrate:      number | null;
+  srtUrl:       string | null;
+}
+
 const PRESETS = [
   { label: 'Studio HD',      resolution: '1920x1080', bitrate: 6000, fps: 30 },
   { label: 'Field 720p',     resolution: '1280x720',  bitrate: 2500, fps: 25 },
@@ -20,6 +29,7 @@ export default function AdminConferenceDetail() {
   const [addUserId, setAddUserId] = useState('');
   const [addRole, setAddRole]     = useState('REPORTER');
   const [addPreset, setAddPreset] = useState(1);
+  const [copied, setCopied]       = useState<string | null>(null);
 
   const { data: conf, isLoading } = useQuery({
     queryKey: ['conference', id],
@@ -56,6 +66,20 @@ export default function AdminConferenceDetail() {
       navigate('/conferences');
     },
   });
+
+  const { data: streamsData } = useQuery({
+    queryKey: ['streams', id],
+    queryFn: () => conferencesApi.getStreams(id!).then(r => r.data),
+    refetchInterval: 5000,
+    enabled: !!id,
+  });
+
+  function copyToClipboard(text: string, key: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(key);
+      setTimeout(() => setCopied(null), 2000);
+    });
+  }
 
   if (isLoading || !conf) {
     return <div style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -134,6 +158,101 @@ export default function AdminConferenceDetail() {
                     bitrate={p.bitrate}
                   />
                 ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* SRT Stream URLs for playout systems */}
+        {streamsData && (
+          <section style={S.section}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12 }}>
+              <h2 style={S.sectionTitle}>SRT Stream URLs</h2>
+              <span style={{ fontSize: 11, color: '#444' }}>
+                for OBS · vMix · Caspar · FFmpeg playout
+              </span>
+              <span style={{ fontSize: 11, color: '#555', marginLeft: 'auto' }}>
+                Server: <code style={{ color: '#888', fontSize: 11 }}>{streamsData.srtServer}</code>
+              </span>
+            </div>
+
+            {streamsData.streams.length === 0 ? (
+              <div style={S.streamEmpty}>
+                No reporters assigned yet.
+              </div>
+            ) : (
+              <div style={S.streamTable}>
+                {/* Header */}
+                <div style={S.streamRowHead}>
+                  <span>Reporter</span>
+                  <span>Status</span>
+                  <span>Quality</span>
+                  <span>Stream ID</span>
+                  <span>SRT URL (copy → paste into playout)</span>
+                </div>
+
+                {(streamsData.streams as StreamInfo[]).map((s, i) => {
+                  const isActive = s.status === 'JOINED' && !!s.streamId;
+                  const urlKey   = `url-${i}`;
+                  const idKey    = `id-${i}`;
+                  return (
+                    <div key={i} style={{ ...S.streamRow, ...(isActive ? S.streamRowActive : {}) }}>
+
+                      {/* Reporter name */}
+                      <span style={S.streamName}>{s.reporterName}</span>
+
+                      {/* Status */}
+                      <span style={{ ...S.streamStatus, color: isActive ? '#1D9E75' : '#555' }}>
+                        {isActive ? '● LIVE' : s.status}
+                      </span>
+
+                      {/* Quality */}
+                      <span style={S.streamMeta}>
+                        {s.resolution ?? '—'}
+                        {s.bitrate ? ` · ${s.bitrate}k` : ''}
+                      </span>
+
+                      {/* Stream ID */}
+                      <div style={S.streamIdWrap}>
+                        <code style={S.streamIdCode}>
+                          {s.streamId ?? 'not started'}
+                        </code>
+                        {s.streamId && (
+                          <button
+                            onClick={() => copyToClipboard(s.streamId!, idKey)}
+                            style={S.copyBtn}
+                            title="Copy stream ID"
+                          >
+                            {copied === idKey ? '✓' : '⎘'}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Full SRT URL */}
+                      <div style={S.streamUrlWrap}>
+                        {s.srtUrl ? (
+                          <>
+                            <code style={{ ...S.streamIdCode, color: isActive ? '#7dd3c8' : '#555', flex: 1 }}>
+                              {s.srtUrl}
+                            </code>
+                            <button
+                              onClick={() => copyToClipboard(s.srtUrl!, urlKey)}
+                              style={{ ...S.copyBtn, ...(isActive ? S.copyBtnActive : {}) }}
+                              title="Copy SRT URL"
+                            >
+                              {copied === urlKey ? '✓ Copied' : '⎘ Copy'}
+                            </button>
+                          </>
+                        ) : (
+                          <span style={{ color: '#444', fontSize: 11 }}>
+                            Stream not started
+                          </span>
+                        )}
+                      </div>
+
+                    </div>
+                  );
+                })}
               </div>
             )}
           </section>
@@ -241,4 +360,33 @@ const S: Record<string, React.CSSProperties> = {
   spinner:         { width: 36, height: 36, border: '3px solid #222',
                      borderTop: '3px solid #E24B4A', borderRadius: '50%',
                      animation: 'spin 1s linear infinite' },
+
+  /* Stream URLs panel */
+  streamEmpty:     { color: '#444', fontSize: 13, padding: '12px 0' },
+  streamTable:     { display: 'flex', flexDirection: 'column', gap: 4 },
+  streamRowHead:   { display: 'grid',
+                     gridTemplateColumns: '130px 80px 120px 200px 1fr',
+                     gap: 10, padding: '6px 14px',
+                     fontSize: 9, color: '#555', fontWeight: 700,
+                     textTransform: 'uppercase', letterSpacing: '0.08em' },
+  streamRow:       { display: 'grid',
+                     gridTemplateColumns: '130px 80px 120px 200px 1fr',
+                     gap: 10, padding: '10px 14px',
+                     background: '#0f0f0f', border: '1px solid #1a1a1a',
+                     borderRadius: 8, alignItems: 'center' },
+  streamRowActive: { background: '#0a140f', borderColor: '#1a3a2a' },
+  streamName:      { fontWeight: 600, fontSize: 13, color: '#ddd',
+                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  streamStatus:    { fontSize: 11, fontWeight: 700 },
+  streamMeta:      { fontSize: 11, color: '#555', fontFamily: 'monospace' },
+  streamIdWrap:    { display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' },
+  streamIdCode:    { fontSize: 10, color: '#666', fontFamily: 'monospace',
+                     background: '#141414', padding: '3px 7px', borderRadius: 4,
+                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                     maxWidth: '100%' },
+  streamUrlWrap:   { display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden', minWidth: 0 },
+  copyBtn:         { flexShrink: 0, background: '#1e1e1e', border: '1px solid #2a2a2a',
+                     color: '#888', borderRadius: 6, padding: '4px 10px',
+                     fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' },
+  copyBtnActive:   { background: '#0a1e14', borderColor: '#1D9E75', color: '#1D9E75' },
 };

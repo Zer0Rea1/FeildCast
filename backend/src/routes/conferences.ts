@@ -107,6 +107,45 @@ router.post('/:id/livekit-token', requireAuth, async (req: AuthRequest, res) => 
   });
 });
 
+// GET /api/conferences/:id/streams — admin gets active SRT stream URLs for all reporters
+// Returns ready-to-paste SRT URLs for playout systems (OBS, vMix, Caspar, etc.)
+router.get('/:id/streams', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  const id = String(req.params.id);
+
+  const conference = await prisma.conference.findUnique({
+    where: { id },
+    include: {
+      participants: {
+        where: { role: 'REPORTER' },
+        include: { user: { select: { name: true } } },
+      },
+    },
+  });
+  if (!conference) return res.status(404).json({ error: 'Not found' });
+
+  const srtHost    = process.env.SRT_SERVER_HOST || 'your.srt-server.com';
+  const srtPort    = process.env.SRT_SERVER_PORT  || '9998';
+  const srtLatency = process.env.SRT_LATENCY_MS   || '200';
+
+  const streams = conference.participants.map(p => ({
+    reporterName: p.user.name,
+    streamId:     p.streamId,
+    status:       p.status,
+    resolution:   p.resolution,
+    bitrate:      p.bitrate,
+    // mode=caller — playout connects TO the SRT server (which is in listener mode)
+    srtUrl: p.streamId
+      ? `srt://${srtHost}:${srtPort}?streamid=${p.streamId}&mode=listener&latency=${srtLatency}`
+      : null,
+  }));
+
+  res.json({
+    conferenceTitle: conference.title,
+    srtServer:       `${srtHost}:${srtPort}`,
+    streams,
+  });
+});
+
 // PATCH /api/conferences/:id/end — admin ends conference
 router.patch('/:id/end', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   const id = req.params.id as string;

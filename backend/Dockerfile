@@ -1,6 +1,13 @@
 # ── Stage 1: Build TypeScript ─────────────────────────────────────────────
 FROM node:20-bookworm-slim AS builder
 
+# Prisma's query engine needs OpenSSL to detect the right binary target —
+# node:20-bookworm-slim doesn't ship it, so `prisma generate` fails without this.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openssl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY package*.json ./

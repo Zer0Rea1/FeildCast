@@ -7,16 +7,13 @@ http {
     default_type application/octet-stream;
     sendfile     on;
 
-    # Security headers applied globally
     add_header X-Content-Type-Options  nosniff;
     add_header X-Frame-Options         SAMEORIGIN;
 
-    # Upstream services (Docker internal names)
     upstream backend   { server backend:3000; }
     upstream webclient { server web-client:80; }
     upstream livekit   { server livekit:7880; }
 
-    # Rate limiting for API endpoints
     limit_req_zone $binary_remote_addr zone=api:10m rate=60r/m;
 
     # ── HTTP → HTTPS redirect ────────────────────────────────────────────
@@ -30,14 +27,13 @@ http {
     server {
         listen 443 ssl;
         http2  on;
-        server_name YOURDOMAIN.COM;
+        server_name ${DOMAIN};
 
-        ssl_certificate     /etc/letsencrypt/live/YOURDOMAIN.COM/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/YOURDOMAIN.COM/privkey.pem;
+        ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
         ssl_protocols       TLSv1.2 TLSv1.3;
         ssl_prefer_server_ciphers off;
 
-        # REST API
         location /api/ {
             limit_req zone=api burst=30 nodelay;
             proxy_pass         http://backend/api/;
@@ -48,7 +44,6 @@ http {
             proxy_read_timeout 30s;
         }
 
-        # WebSocket — reporter SRT bridge (long-lived connection)
         location /stream {
             proxy_pass         http://backend/stream;
             proxy_http_version 1.1;
@@ -60,19 +55,16 @@ http {
             proxy_buffering    off;
         }
 
-        # HLS segments for admin live monitor
         location /hls/ {
             proxy_pass http://backend/hls/;
             add_header Cache-Control       "no-cache, no-store";
             add_header Access-Control-Allow-Origin "*";
         }
 
-        # Health check
         location /health {
             proxy_pass http://backend/health;
         }
 
-        # Web client SPA (all remaining traffic)
         location / {
             proxy_pass       http://webclient/;
             proxy_set_header Host $host;
@@ -83,10 +75,10 @@ http {
     server {
         listen 443 ssl;
         http2  on;
-        server_name livekit.YOURDOMAIN.COM;
+        server_name livekit.${DOMAIN};
 
-        ssl_certificate     /etc/letsencrypt/live/livekit.YOURDOMAIN.COM/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/livekit.YOURDOMAIN.COM/privkey.pem;
+        ssl_certificate     /etc/letsencrypt/live/livekit.${DOMAIN}/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/livekit.${DOMAIN}/privkey.pem;
         ssl_protocols       TLSv1.2 TLSv1.3;
 
         location / {

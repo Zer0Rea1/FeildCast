@@ -41,9 +41,14 @@ services:
       LIVEKIT_INGRESS_HOST:  http://livekit-ingress:8080
       LIVEKIT_API_KEY:       ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET:    ${LIVEKIT_API_SECRET}
-      LIVEKIT_PUBLIC_URL:    wss://livekit.${DOMAIN}
+      LIVEKIT_PUBLIC_URL:    ${LIVEKIT_PUBLIC_URL}
       PORT:                  3000
-      CLIENT_URL:            https://${DOMAIN}
+      CLIENT_URL:            ${PUBLIC_URL}
+    # Lets the backend reach an SRT receiver running on the host machine itself
+    # (outside Docker) via host.docker.internal — used when SRT_SERVER_HOST
+    # is set to host.docker.internal in infra/.env.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
@@ -52,7 +57,6 @@ services:
     networks:
       - internal
       - external
-    restart: unless-stopped
     # Backend memory must cover Node.js + all FFmpeg child processes.
     # Each active reporter stream spawns one FFmpeg using ~150-250MB.
     # Formula: 400MB base + (max_reporters * 250MB)
@@ -70,7 +74,7 @@ services:
       context: ../web-client
       dockerfile: Dockerfile
       args:
-        VITE_LIVEKIT_URL: wss://livekit.${DOMAIN}
+        VITE_LIVEKIT_URL: ${LIVEKIT_PUBLIC_URL}
         VITE_API_URL:     ""
         VITE_WS_URL:      ""
     restart: unless-stopped
@@ -140,12 +144,19 @@ services:
         reservations:
           memory: 128M
 
-  # ── Nginx (SSL termination + reverse proxy) ──────────────────────────────
+  # ── Nginx (reverse proxy — plain HTTP for LAN test, SSL for production) ──
+  # Config is picked at container start by nginx-select-config.sh based on
+  # ENABLE_SSL in infra/.env — flip that one variable to switch modes.
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
+    environment:
+      ENABLE_SSL: ${ENABLE_SSL:-false}
+      DOMAIN:     ${DOMAIN}
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.plain.conf.template:/etc/nginx/templates/nginx.plain.conf.template:ro
+      - ./nginx.ssl.conf.template:/etc/nginx/templates/nginx.ssl.conf.template:ro
+      - ./nginx-select-config.sh:/docker-entrypoint.d/40-select-config.sh:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
     ports:
       - "80:80"

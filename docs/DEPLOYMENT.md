@@ -1,11 +1,30 @@
-# FieldCast — VPS Deployment Guide
+# FieldCast — Deployment Guide
+
+## Two modes, one config
+
+`infra/.env` has a **DEPLOYMENT TARGET** block at the top — it's the only
+thing you change to go from local/LAN testing to production:
+
+```bash
+ENABLE_SSL=false                       # true for production
+DOMAIN=192.168.1.50                    # your LAN IP now → real domain later
+PUBLIC_URL=http://192.168.1.50         # https://yourdomain.com in production
+LIVEKIT_PUBLIC_URL=ws://192.168.1.50:7880   # wss://livekit.yourdomain.com in production
+```
+
+`nginx` reads `ENABLE_SSL` at container start and picks the matching config
+automatically (`infra/nginx-select-config.sh` selects between
+`nginx.plain.conf.template` and `nginx.ssl.conf.template` — no manual file
+editing, no `sed`). Everything below assumes you're going straight to
+production; skip DNS/certbot steps if you're only testing on your LAN.
 
 ## Requirements
 
 - Ubuntu 22.04 VPS, **minimum 4 GB RAM** (8 GB recommended for comfort)
 - 2+ vCPUs
 - 20+ GB disk
-- A domain with DNS control — you need **3 subdomains**:
+- For production (`ENABLE_SSL=true`): a domain with DNS control — you need
+  **2 subdomains**:
   - `yourdomain.com` — main app + API
   - `livekit.yourdomain.com` — LiveKit WebRTC signaling
 
@@ -63,22 +82,25 @@ cp infra/.env.example infra/.env
 nano infra/.env
 ```
 
-Fill in every value:
+For **production**, set the deployment target block to:
+```bash
+ENABLE_SSL=true
+DOMAIN=yourdomain.com
+PUBLIC_URL=https://yourdomain.com
+LIVEKIT_PUBLIC_URL=wss://livekit.yourdomain.com
+```
+
+Then fill in the rest:
 
 ```bash
 DB_PASSWORD=use-openssl-rand-hex-16
 JWT_SECRET=use-openssl-rand-hex-32
-DOMAIN=yourdomain.com
 
-SRT_SERVER_HOST=your.srt-server.com
+SRT_SERVER_HOST=your.srt-server.com   # or host.docker.internal if it runs on this same machine
 SRT_SERVER_PORT=9998
 
 LIVEKIT_API_KEY=APIxxxxxxxxxxxxxxxx        # from step 3
-LIVEKIT_API_SECRET=your-long-secret       # from step 3
-
-VITE_LIVEKIT_URL=wss://livekit.yourdomain.com
-VITE_API_URL=
-VITE_WS_URL=
+LIVEKIT_API_SECRET=your-long-secret        # from step 3
 ```
 
 Generate strong random values:
@@ -90,6 +112,9 @@ openssl rand -hex 32   # for JWT_SECRET
 ---
 
 ## 5 — Point DNS records
+
+*Skip this step if you're testing on your LAN (`ENABLE_SSL=false`) — your LAN
+IP in `infra/.env` is all you need.*
 
 In your DNS panel, create **A records** pointing to your VPS IP:
 
@@ -104,6 +129,8 @@ Wait for DNS to propagate (check with `dig yourdomain.com`).
 
 ## 6 — Get SSL certificates
 
+*Skip this step if you're testing on your LAN (`ENABLE_SSL=false`).*
+
 ```bash
 sudo apt install -y certbot
 
@@ -117,15 +144,7 @@ Certificates are saved to `/etc/letsencrypt/live/`.
 
 ---
 
-## 7 — Replace YOURDOMAIN.COM in nginx.conf
-
-```bash
-sed -i 's/YOURDOMAIN.COM/yourdomain.com/g' infra/nginx.conf
-```
-
----
-
-## 8 — Open firewall ports
+## 7 — Open firewall ports
 
 ```bash
 sudo ufw allow 22/tcp     # SSH
@@ -144,7 +163,7 @@ sudo ufw enable
 
 ---
 
-## 9 — Build and start everything
+## 8 — Build and start everything
 
 ```bash
 cd /opt/fieldcast/infra
@@ -161,7 +180,7 @@ docker compose logs -f
 
 ---
 
-## 10 — Create the first admin account
+## 9 — Create the first admin account
 
 Register via the web app, then promote to admin directly in the database:
 
@@ -172,7 +191,7 @@ docker compose exec db psql -U fieldcast -d fieldcast \
 
 ---
 
-## 11 — Verify everything works
+## 10 — Verify everything works
 
 ```bash
 # Health check
@@ -256,11 +275,13 @@ docker compose restart backend  # restart one service
 | Symptom | Check |
 |---------|-------|
 | `502 Bad Gateway` | `docker compose logs backend` — backend may still be starting |
-| LiveKit not connecting | Ensure ports 50000-60000/UDP are open in firewall |
-| Camera won't start on mobile | Must access via HTTPS (`https://yourdomain.com`), not HTTP |
+| LiveKit not connecting | Ensure ports 50000-60000/UDP are open in firewall; in SSL mode also check `livekit.${DOMAIN}` DNS + certs |
+| Camera won't start on mobile | Production (`ENABLE_SSL=true`) must be accessed via HTTPS — browsers block camera access on plain HTTP for any host except `localhost`. LAN testing (`ENABLE_SSL=false`) works over plain HTTP only when reporters open it as `http://<DOMAIN>` where `<DOMAIN>` is a private LAN IP. |
 | HLS tiles empty in admin | Reporters must be actively streaming; check `docker compose logs backend` for FFmpeg output |
 | `fetch failed` on conference create | `LIVEKIT_HOST=http://livekit:7880` must match the Docker service name |
 | Database migration error | `docker compose exec backend npx prisma db push --schema=src/prisma/schema.prisma` |
+| nginx picked the wrong config | Check `docker compose logs nginx` for `[nginx] SSL mode` / `[nginx] Plain HTTP mode` — confirms `ENABLE_SSL` was read correctly; if wrong, `docker compose up -d --force-recreate nginx` after fixing `infra/.env` |
+| Prisma `generate` fails during build | Needs OpenSSL in the builder stage — already installed in `backend/Dockerfile`; if you forked it, add `apt-get install -y openssl ca-certificates` before `npm ci` |
 
 ---
 
@@ -269,9 +290,9 @@ docker compose restart backend  # restart one service
 ```
 Browser / Android WebView
         │
-        │  HTTPS 443
+        │  HTTPS 443 (ENABLE_SSL=true)  /  HTTP 80 (ENABLE_SSL=false, LAN)
         ▼
-    [nginx]
+    [nginx]  ← config picked by nginx-select-config.sh from ENABLE_SSL
         │
         ├── /api/*      → backend:3000  (REST API)
         ├── /stream     → backend:3000  (WebSocket SRT bridge)
@@ -286,18 +307,22 @@ Reporter phone (Go Live)
         │
         │  FFmpeg (child process)
         ├──── SRT push ────────────────→ [Your SRT Broadcast Server]
-        ├──── RTMP push ───────────────→ livekit-ingress:1935
-        │                                       │
+        ├──── RTMP push ───────────────→ livekit-ingress:1935   (skipped in dual mode —
+        │                                       │                reporter is already publishing
+        │                                       │                directly to LiveKit via WebRTC)
         │                               publishes into LiveKit room
         │                                       ▼
         └──── HLS segments ───→ /var/www/hls/  [Admin monitor tiles]
 
 Anchor phone / browser
         │
-        │  WSS (through nginx → livekit:7880)
+        │  ENABLE_SSL=true:  WSS through nginx → livekit.${DOMAIN} → livekit:7880
+        │  ENABLE_SSL=false: WS directly to <DOMAIN>:7880 (port published straight
+        │                    from docker-compose, not proxied by nginx)
         ▼
     [LiveKit SFU]
         │
-        ├── receives reporter video (via Ingress from FFmpeg RTMP)
+        ├── receives reporter video — either via Ingress (FFmpeg RTMP, solo mode)
+        │   or directly over WebRTC from the reporter's browser (dual mode)
         └── receives reporter audio (direct from reporter browser)
 ```
