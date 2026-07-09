@@ -7,6 +7,8 @@ interface User {
   name: string;
   email: string;
   role: 'ADMIN' | 'REPORTER' | 'ANCHOR';
+  designation?: string;
+  city?: string;
   createdAt: string;
 }
 
@@ -67,6 +69,13 @@ export default function AdminUsers() {
                   <div style={S.userInfo}>
                     <div style={S.name}>{user.name}</div>
                     <div style={S.email}>{user.email}</div>
+                    {(user.designation || user.city) && (
+                      <div style={S.meta}>
+                        {user.designation && <span>💼 {user.designation}</span>}
+                        {user.designation && user.city && <span style={S.metaDot}>·</span>}
+                        {user.city && <span>📍 {user.city}</span>}
+                      </div>
+                    )}
                   </div>
                   <div style={S.roleTag} data-role={user.role}>
                     <span style={{ ...S.roleDot, background: color }} />
@@ -126,6 +135,8 @@ const S: Record<string, React.CSSProperties> = {
   userInfo:   { flex: 1 },
   name:       { fontWeight: 500, fontSize: 14 },
   email:      { color: '#555', fontSize: 12, marginTop: 2 },
+  meta:       { color: '#888', fontSize: 12, marginTop: 4, display: 'flex', gap: 6, alignItems: 'center' },
+  metaDot:    { color: '#444' },
   roleTag:    { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11,
                 fontWeight: 700, color: '#666', textTransform: 'uppercase',
                 letterSpacing: '0.05em', minWidth: 80 },

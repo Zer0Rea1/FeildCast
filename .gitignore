@@ -19,7 +19,8 @@ coverage/
 
 # Dependencies caches
 *.tsbuildinfo
-
+.env
+/infra/.env
 # IDE / editors
 .vscode/
 .idea/

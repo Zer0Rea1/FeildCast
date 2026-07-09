@@ -135,7 +135,7 @@ router.get('/:id/streams', requireAuth, requireAdmin, async (req: AuthRequest, r
     bitrate:      p.bitrate,
     // mode=caller — playout connects TO the SRT server (which is in listener mode)
     srtUrl: p.streamId
-      ? `srt://${srtHost}:${srtPort}?streamid=${p.streamId}&mode=listener&latency=${srtLatency}`
+      ? `srt://${process.env.vps_ip}:${process.env.vps_port}?streamid=read:${p.streamId}&mode=caller&latency=${srtLatency}`
       : null,
   }));
 

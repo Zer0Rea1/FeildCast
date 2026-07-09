@@ -15,7 +15,7 @@ dist-ssr
 # SSL certs — regenerate with certs/mkcert if needed
 certs/*.pem
 certs/mkcert
-
+.env
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

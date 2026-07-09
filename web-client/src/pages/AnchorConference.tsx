@@ -9,10 +9,12 @@ import {
   RoomAudioRenderer,
   isTrackReference,
   useLocalParticipant,
+  useRoomContext,
 } from '@livekit/components-react';
 import '@livekit/components-styles';
 import { Track } from 'livekit-client';
 import { conferencesApi } from '../api/client';
+import { useCameraDevices } from '../hooks/useCameraDevices';
 
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL || 'ws://localhost:7880';
 
@@ -28,6 +30,7 @@ export default function AnchorConference() {
   const [conference, setConference] = useState<any>(null);
   const [stage, setStage]           = useState<Stage>('loading');
   const [error, setError]           = useState('');
+  const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const previewRef                  = useRef<HTMLVideoElement>(null);
   const previewStream               = useRef<MediaStream | null>(null);
 
@@ -149,20 +152,42 @@ export default function AnchorConference() {
         style={S.room}
       >
         <RoomAudioRenderer />
-        <ConferenceGrid isMobile={isMobile} />
+        <ConferenceGrid
+          isMobile={isMobile}
+          selectedDeviceId={selectedDeviceId}
+          onSetDeviceId={setSelectedDeviceId}
+        />
       </LiveKitRoom>
     </div>
   );
 }
 
-function ConferenceGrid({ isMobile }: { isMobile: boolean }) {
+function ConferenceGrid({
+  isMobile,
+  selectedDeviceId,
+  onSetDeviceId,
+}: {
+  isMobile: boolean;
+  selectedDeviceId: string;
+  onSetDeviceId: (id: string) => void;
+}) {
+  const room = useRoomContext();
+  const cameras = useCameraDevices();
   const participants = useParticipants();
   const { localParticipant } = useLocalParticipant();
 
+  // Enable camera + mic on mount
   useEffect(() => {
     localParticipant.setCameraEnabled(true).catch(() => {});
     localParticipant.setMicrophoneEnabled(true).catch(() => {});
   }, [localParticipant]);
+
+  // Auto-select first camera once devices are enumerated
+  useEffect(() => {
+    if (cameras.length > 0 && !selectedDeviceId) {
+      onSetDeviceId(cameras[0].deviceId);
+    }
+  }, [cameras]);
 
   const allTracks = useTracks(
     [{ source: Track.Source.Camera, withPlaceholder: true }],
@@ -183,25 +208,37 @@ function ConferenceGrid({ isMobile }: { isMobile: boolean }) {
 
   const micEnabled    = localParticipant.isMicrophoneEnabled;
   const cameraEnabled = localParticipant.isCameraEnabled;
-  const ctrlBarH      = isMobile ? 72 : 64;
+  // Extra height when camera picker is visible
+  const ctrlBarH = cameras.length > 0
+    ? (isMobile ? 108 : 96)
+    : (isMobile ? 72 : 64);
 
   function toggleMic()    { localParticipant.setMicrophoneEnabled(!micEnabled).catch(() => {}); }
   function toggleCamera() { localParticipant.setCameraEnabled(!cameraEnabled).catch(() => {}); }
 
+  async function handleCameraChange(deviceId: string) {
+    onSetDeviceId(deviceId);
+    if (localParticipant.isCameraEnabled) {
+      await room.switchActiveDevice('videoinput', deviceId).catch(() => {});
+    }
+  }
+
   return (
     <div style={S.roomWrapper}>
-      {/* Participant count badge */}
+
+      {/* ── Participant count badge (top-left) ── */}
       <div style={S.participantBadge}>
         <span style={{ color: '#34d399', fontSize: 8 }}>●</span>
         {meetingCount} in room
       </div>
 
-      {/* Reporter grid or empty state — padded bottom to clear controls bar */}
+      {/* ── Reporter grid or empty state ── */}
       {remoteTracks.length === 0 ? (
-        <div style={{ ...S.emptyState, paddingBottom: ctrlBarH }}>
-          <div style={{ fontSize: isMobile ? 40 : 52, marginBottom: 8 }}>📡</div>
+        <div style={S.emptyState}>
+          <div style={S.emptyIcon}>📡</div>
           <h2 style={S.emptyTitle}>Waiting for Reporters</h2>
-          <p style={S.emptySub}>Reporter feeds appear here when they join</p>
+          <p style={S.emptySub}>Reporter feeds will appear here once they join</p>
+          <div style={S.emptyPulse} />
         </div>
       ) : (
         <div style={{ ...S.grid, gridTemplateColumns: cols, paddingBottom: ctrlBarH + 10 }}>
@@ -209,41 +246,67 @@ function ConferenceGrid({ isMobile }: { isMobile: boolean }) {
         </div>
       )}
 
-      {/* PiP self-view — desktop only, shifted above controls bar */}
-      {localTrack && !isMobile && (
-        <div style={S.selfView}>
-          {isTrackReference(localTrack)
-            ? <VideoTrack trackRef={localTrack} style={S.selfVideo} />
-            : <div style={S.selfEmpty}>👤</div>}
-          <div style={S.selfLabel}>You</div>
-          <div style={S.selfBadge}>ANCHOR</div>
+      {/* ── Anchor self-view PiP — bottom-left on mobile only ── */}
+      {localTrack && isMobile && (
+        <div style={{ ...S.selfView, bottom: ctrlBarH + 10, left: 12, right: 'auto' }}>
+          <div style={S.selfViewInner}>
+            {isTrackReference(localTrack)
+              ? <VideoTrack trackRef={localTrack} style={S.selfVideo} />
+              : <div style={S.selfEmpty}>👤</div>}
+          </div>
+          <div style={S.selfLabel}>You (Anchor)</div>
+          {/* Camera-off overlay */}
+          {!cameraEnabled && (
+            <div style={S.selfOffOverlay}>📷</div>
+          )}
         </div>
       )}
 
-      {/* Controls bar */}
+      {/* ── Controls bar — single row ── */}
       <div style={{ ...S.controlsBar, height: ctrlBarH }}>
-        {/* Self-view avatar on mobile (no PiP) */}
-        {isMobile && (
-          <div style={S.mobileAvatar}>
-            {isTrackReference(localTrack)
-              ? <VideoTrack trackRef={localTrack!} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-              : <span style={{ fontSize: 18 }}>👤</span>}
+
+        {/* Camera picker (left side) */}
+        {cameras.length > 0 && (
+          <div style={S.pickerWrap}>
+            <span style={S.pickerIcon}>📷</span>
+            <select
+              value={selectedDeviceId}
+              onChange={e => handleCameraChange(e.target.value)}
+              style={S.cameraPicker}
+            >
+              {cameras.map(cam => (
+                <option key={cam.deviceId} value={cam.deviceId}>
+                  {cam.facing === 'user' ? '🤳 ' : cam.facing === 'environment' ? '📸 ' : ''}
+                  {cam.label}
+                </option>
+              ))}
+            </select>
           </div>
         )}
+
+        {/* Divider */}
+        {cameras.length > 0 && <div style={S.pickerDivider} />}
+
+        {/* Mic button */}
         <button
           onClick={toggleMic}
-          style={{ ...S.ctrlBtn, ...(!micEnabled ? S.ctrlBtnOff : {}), ...(isMobile ? S.ctrlBtnMobile : {}) }}
+          style={{ ...S.ctrlBtn, ...(!micEnabled ? S.ctrlBtnOff : {}) }}
+          title={micEnabled ? 'Mute' : 'Unmute'}
         >
-          <span style={{ fontSize: isMobile ? 22 : 18 }}>{micEnabled ? '🎤' : '🔇'}</span>
-          <span style={S.ctrlLabel}>{micEnabled ? 'Mute' : 'Unmuted'}</span>
+          <span style={S.ctrlIcon}>{micEnabled ? '🎤' : '🔇'}</span>
+          <span style={S.ctrlLabel}>{micEnabled ? 'Mute' : 'Unmute'}</span>
         </button>
+
+        {/* Camera button */}
         <button
           onClick={toggleCamera}
-          style={{ ...S.ctrlBtn, ...(!cameraEnabled ? S.ctrlBtnOff : {}), ...(isMobile ? S.ctrlBtnMobile : {}) }}
+          style={{ ...S.ctrlBtn, ...(!cameraEnabled ? S.ctrlBtnOff : {}) }}
+          title={cameraEnabled ? 'Camera Off' : 'Camera On'}
         >
-          <span style={{ fontSize: isMobile ? 22 : 18 }}>{cameraEnabled ? '📹' : '📷'}</span>
+          <span style={S.ctrlIcon}>{cameraEnabled ? '📹' : '📷'}</span>
           <span style={S.ctrlLabel}>{cameraEnabled ? 'Camera' : 'Cam Off'}</span>
         </button>
+
       </div>
     </div>
   );
@@ -325,15 +388,27 @@ const S: Record<string, React.CSSProperties> = {
                   borderRadius: 12, padding: '8px 20px', cursor: 'pointer', minWidth: 70 },
   ctrlBtnMobile:{ padding: '10px 24px', minWidth: 80 },
   ctrlBtnOff:   { background: '#3a1a1a', borderColor: '#5a2020', color: '#E24B4A' },
+  cameraPicker: { flex: 1, background: '#1a1a1a', border: '1px solid #2a2a2a', color: '#ccc',
+                  borderRadius: 6, padding: '4px 8px', fontSize: 11, cursor: 'pointer',
+                  outline: 'none', maxWidth: 220 },
+  pickerWrap:   { display: 'flex', alignItems: 'center', gap: 6 },
+  pickerIcon:   { fontSize: 13, flexShrink: 0, color: '#666' },
+  pickerDivider:{ width: 1, height: 28, background: '#2a2a2a', marginInline: 6 },
+  emptyIcon:    { fontSize: 52, marginBottom: 8, opacity: 0.5 },
+  emptyPulse:   { width: 8, height: 8, borderRadius: '50%', background: '#34d399',
+                  marginTop: 8, animation: 'pulse 2s infinite' },
   ctrlIcon:     { fontSize: 18 },
   ctrlLabel:    { fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', color: '#666' },
   mobileAvatar: { width: 40, height: 40, borderRadius: '50%', overflow: 'hidden',
                   background: '#222', border: '2px solid #333',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 18, flexShrink: 0 },
-  selfView:     { position: 'absolute', bottom: 76, right: 14, width: 160, height: 100,
-                  borderRadius: 10, overflow: 'hidden', border: '2px solid #333',
-                  background: '#1a1a1a', zIndex: 20, boxShadow: '0 4px 20px rgba(0,0,0,0.6)' },
+  selfView:     { position: 'absolute', bottom: 76, left: 12, width: 130, height: 84,
+                  borderRadius: 10, overflow: 'hidden', border: '2px solid rgba(255,255,255,0.12)',
+                  background: '#1a1a1a', zIndex: 30, boxShadow: '0 6px 24px rgba(0,0,0,0.7)' },
+  selfViewInner: { width: '100%', height: '100%', position: 'relative' },
+  selfOffOverlay:{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)',
+                   display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 },
   selfVideo:    { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
   selfEmpty:    { width: '100%', height: '100%', display: 'flex', alignItems: 'center',
                   justifyContent: 'center', fontSize: 28, background: '#222' },

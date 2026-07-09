@@ -5,7 +5,7 @@ import WebSocket from 'ws';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import path from 'path';
+// import path from 'path';
 import { authRouter } from './routes/auth';
 import { usersRouter } from './routes/users';
 import { conferencesRouter } from './routes/conferences';
@@ -18,13 +18,14 @@ const wss = new WebSocket.Server({ server, path: '/stream' });
 
 app.use(helmet());
 app.use(cors({
-  origin: (origin, cb) => {
-    // Allow requests with no origin (curl, mobile apps hitting the proxy)
-    if (!origin) return cb(null, true);
-    // Allow localhost and any LAN IP (10.x, 192.168.x, 172.x)
-    const allowed = /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin);
-    cb(allowed ? null : new Error('Not allowed by CORS'), allowed);
-  },
+  origin: process.env.CLIENT_URL || '*',
+  // origin: (origin, cb) => {
+  //   // Allow requests with no origin (curl, mobile apps hitting the proxy)
+  //   if (!origin) return cb(null, true);
+  //   // Allow localhost and any LAN IP (10.x, 192.168.x, 172.x)
+  //   const allowed = /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin);
+  //   cb(allowed ? null : new Error('Not allowed by CORS'), allowed);
+  // },
   credentials: true,
 }));
 app.use(express.json());
@@ -44,15 +45,15 @@ app.use('/api/conferences', conferencesRouter);
 app.use('/api/conferences', participantsRouter);
 
 // Serve built web-client
-const webClientPath = path.join(__dirname, '../../web-client/dist');
-app.use(express.static(webClientPath));
+// const webClientPath = path.join(__dirname, '../../web-client/dist');
+// app.use(express.static(webClientPath));
 
-// SPA fallback — all non-API routes return index.html
-app.get('*', (req, res) => {
-  if (!req.path.startsWith('/api') && !req.path.startsWith('/hls')) {
-    res.sendFile(path.join(webClientPath, 'index.html'));
-  }
-});
+// // SPA fallback — all non-API routes return index.html
+// app.get('*', (req, res) => {
+//   if (!req.path.startsWith('/api') && !req.path.startsWith('/hls')) {
+//     res.sendFile(path.join(webClientPath, 'index.html'));
+//   }
+// });
 
 // Health check
 app.get('/health', (_, res) => res.json({

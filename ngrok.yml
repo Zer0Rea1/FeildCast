@@ -1,0 +1,9 @@
+version: 2
+authtoken: 3G4d6o3AZQphW84S98JLFAECpDS_6dwaoYLKxJ53ouRavsQ11
+tunnels:
+  project1:
+    addr: 3000
+    proto: http
+  project2:
+    addr: 3001
+    proto: http

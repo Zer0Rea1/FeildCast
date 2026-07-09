@@ -18,8 +18,10 @@ export default function AdminCreate() {
   const [title, setTitle]       = useState('');
   const [desc, setDesc]         = useState('');
   const [selected, setSelected] = useState<Selected[]>([]);
+  const [search, setSearch]     = useState('');
+  const [filter, setFilter]     = useState<'all' | 'selected' | 'reporters' | 'anchors'>('all');
 
-  const { data: users = [] } = useQuery({
+  const { data: users = [] } = useQuery<any[]>({
     queryKey: ['users'],
     queryFn: () => usersApi.list().then(r => r.data),
   });
@@ -85,57 +87,131 @@ export default function AdminCreate() {
         <label style={S.label}>Select Participants</label>
         <p style={S.sublabel}>Each person receives a push notification immediately.</p>
 
-        <div style={{ marginBottom: 24 }}>
-          {users.map((user: any) => {
-            const sel = selected.find(s => s.userId === user.id);
-            return (
-              <div
-                key={user.id}
-                style={{ ...S.userCard, ...(sel ? S.userCardSel : {}) }}
-              >
-                <div style={S.userRow}>
-                  <input
-                    type="checkbox" checked={!!sel}
-                    onChange={() => toggleUser(user)}
-                    style={{ width: 16, height: 16, accentColor: '#1D9E75', cursor: 'pointer' }}
-                  />
-                  <div style={{ flex: 1, marginLeft: 10 }}>
-                    <div style={S.userName}>{user.name}</div>
-                    <div style={S.userEmail}>{user.email} · {user.role}</div>
-                  </div>
-                </div>
+        {/* Search input */}
+        <div style={S.searchContainer}>
+          <span style={S.searchIcon}>🔍</span>
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search by name, email, designation, or city..."
+            style={S.searchInput}
+          />
+        </div>
 
-                {sel && (
-                  <div style={S.userSettings}>
-                    <div style={S.roleRow}>
-                      {(['REPORTER', 'ANCHOR'] as const).map(r => (
-                        <button
-                          key={r}
-                          onClick={() => setRole(user.id, r)}
-                          style={{ ...S.roleBtn, ...(sel.role === r ? S.roleBtnActive : {}) }}
-                        >
-                          {r === 'REPORTER' ? '📹 Reporter' : '🎤 Anchor'}
-                        </button>
-                      ))}
+        {/* Filter Tabs */}
+        <div style={S.tabs}>
+          {[
+            { id: 'all', label: 'All', count: users.length },
+            { id: 'selected', label: 'Selected', count: selected.length, isSelectedTab: true },
+            { id: 'reporters', label: 'Reporters', count: users.filter(u => u.role === 'REPORTER').length },
+            { id: 'anchors', label: 'Anchors', count: users.filter(u => u.role === 'ANCHOR').length },
+          ].map(t => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setFilter(t.id as any)}
+              style={{ ...S.tabBtn, ...(filter === t.id ? S.tabBtnActive : {}) }}
+            >
+              {t.label}
+              <span style={{
+                ...S.badge,
+                ...(filter === t.id ? S.badgeActive : {}),
+                ...(t.isSelectedTab && selected.length > 0 && filter !== t.id ? { background: '#1D9E75', color: '#fff' } : {})
+              }}>
+                {t.count}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        {/* Participant list */}
+        <div style={{ marginBottom: 24 }}>
+          {(() => {
+            const filtered = users.filter(user => {
+              const term = search.toLowerCase();
+              const matchesSearch =
+                user.name.toLowerCase().includes(term) ||
+                user.email.toLowerCase().includes(term) ||
+                (user.designation || '').toLowerCase().includes(term) ||
+                (user.city || '').toLowerCase().includes(term);
+
+              if (!matchesSearch) return false;
+
+              const isSel = selected.some(s => s.userId === user.id);
+              if (filter === 'selected') return isSel;
+              if (filter === 'reporters') return user.role === 'REPORTER';
+              if (filter === 'anchors') return user.role === 'ANCHOR';
+              return true;
+            });
+
+            if (filtered.length === 0) {
+              return (
+                <div style={{ textAlign: 'center', padding: '36px 0', color: '#444' }}>
+                  <span style={{ fontSize: 24, display: 'block', marginBottom: 8 }}>👥</span>
+                  No matching participants found
+                </div>
+              );
+            }
+
+            return filtered.map((user: any) => {
+              const sel = selected.find(s => s.userId === user.id);
+              return (
+                <div
+                  key={user.id}
+                  style={{ ...S.userCard, ...(sel ? S.userCardSel : {}) }}
+                >
+                  <div style={S.userRow}>
+                    <input
+                      type="checkbox" checked={!!sel}
+                      onChange={() => toggleUser(user)}
+                      style={{ width: 16, height: 16, accentColor: '#1D9E75', cursor: 'pointer' }}
+                    />
+                    <div style={{ flex: 1, marginLeft: 10 }}>
+                      <div style={S.userName}>{user.name}</div>
+                      <div style={S.userEmail}>{user.email} · {user.role}</div>
+                      {(user.designation || user.city) && (
+                        <div style={S.meta}>
+                          {user.designation && <span>💼 {user.designation}</span>}
+                          {user.designation && user.city && <span style={S.metaDot}>·</span>}
+                          {user.city && <span>📍 {user.city}</span>}
+                        </div>
+                      )}
                     </div>
-                    {sel.role === 'REPORTER' && (
-                      <div style={S.presetRow}>
-                        {PRESETS.map((p, i) => (
+                  </div>
+
+                  {sel && (
+                    <div style={S.userSettings}>
+                      <div style={S.roleRow}>
+                        {(['REPORTER', 'ANCHOR'] as const).map(r => (
                           <button
-                            key={i}
-                            onClick={() => setPreset(user.id, i)}
-                            style={{ ...S.presetBtn, ...(sel.preset === i ? S.presetBtnActive : {}) }}
+                            key={r}
+                            onClick={() => setRole(user.id, r)}
+                            style={{ ...S.roleBtn, ...(sel.role === r ? S.roleBtnActive : {}) }}
                           >
-                            {p.label}
+                            {r === 'REPORTER' ? '📹 Reporter' : '🎤 Anchor'}
                           </button>
                         ))}
                       </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                      {sel.role === 'REPORTER' && (
+                        <div style={S.presetRow}>
+                          {PRESETS.map((p, i) => (
+                            <button
+                              key={i}
+                              onClick={() => setPreset(user.id, i)}
+                              style={{ ...S.presetBtn, ...(sel.preset === i ? S.presetBtnActive : {}) }}
+                            >
+                              {p.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            });
+          })()}
         </div>
 
         {createMutation.isError && (
@@ -190,4 +266,20 @@ const S: Record<string, React.CSSProperties> = {
                      border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 700,
                      cursor: 'pointer', marginTop: 8 },
   createBtnDisabled: { opacity: 0.5, cursor: 'not-allowed' },
+  searchInput:     { width: '100%', background: '#141414', border: '1px solid #2a2a2a',
+                     borderRadius: 8, padding: '10px 12px 10px 36px', color: '#fff', fontSize: 14,
+                     outline: 'none', boxSizing: 'border-box' },
+  searchContainer: { position: 'relative', marginBottom: 12 },
+  searchIcon:      { position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
+                     color: '#555', fontSize: 14 },
+  tabs:            { display: 'flex', gap: 6, marginBottom: 16, overflowX: 'auto' },
+  tabBtn:          { background: 'transparent', border: '1px solid #222', borderRadius: 8,
+                     padding: '6px 12px', color: '#666', fontSize: 12, fontWeight: 600,
+                     cursor: 'pointer', transition: 'all 0.15s', display: 'flex', alignItems: 'center' },
+  tabBtnActive:    { background: '#1e1e1e', borderColor: '#444', color: '#fff' },
+  badge:           { background: '#222', color: '#666', borderRadius: 20, padding: '1px 6px',
+                     fontSize: 10, marginLeft: 6 },
+  badgeActive:     { background: '#E24B4A', color: '#fff' },
+  meta:            { color: '#888', fontSize: 12, marginTop: 4, display: 'flex', gap: 6, alignItems: 'center' },
+  metaDot:         { color: '#444' },
 };

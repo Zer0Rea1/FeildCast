@@ -9,7 +9,7 @@ export const usersRouter = router;
 // GET /api/users — admin gets list of all users
 router.get('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   const users = await prisma.user.findMany({
-    select: { id: true, name: true, email: true, role: true, createdAt: true },
+    select: { id: true, name: true, email: true, role: true, designation: true, city: true, createdAt: true },
     orderBy: { name: 'asc' },
   });
   res.json(users);

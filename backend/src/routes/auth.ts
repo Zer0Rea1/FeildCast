@@ -9,7 +9,7 @@ export const authRouter = router;
 
 // POST /api/auth/register
 router.post('/register', async (req: Request, res: Response) => {
-  const { name, email, password, role } = req.body;
+  const { name, email, password, role, designation, city } = req.body;
   if (!name || !email || !password) {
     return res.status(400).json({ error: 'name, email and password required' });
   }
@@ -19,7 +19,14 @@ router.post('/register', async (req: Request, res: Response) => {
 
   const passwordHash = await bcrypt.hash(password, 12);
   const user = await prisma.user.create({
-    data: { name, email, passwordHash, role: role || 'REPORTER' },
+    data: {
+      name,
+      email,
+      passwordHash,
+      role: role || 'REPORTER',
+      designation,
+      city,
+    },
   });
 
   const token = jwt.sign(
@@ -28,7 +35,17 @@ router.post('/register', async (req: Request, res: Response) => {
     { expiresIn: '30d' }
   );
 
-  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  res.json({
+    token,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      designation: user.designation,
+      city: user.city,
+    },
+  });
 });
 
 // POST /api/auth/login
@@ -48,7 +65,17 @@ router.post('/login', async (req: Request, res: Response) => {
     { expiresIn: '30d' }
   );
 
-  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  res.json({
+    token,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      designation: user.designation,
+      city: user.city,
+    },
+  });
 });
 
 // PATCH /api/auth/push-token — reporter saves Expo push token after login

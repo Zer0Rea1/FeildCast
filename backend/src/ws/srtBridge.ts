@@ -101,7 +101,7 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
   const srtHost    = process.env.SRT_SERVER_HOST!;
   const srtPort    = process.env.SRT_SERVER_PORT    || '9998';
   const srtLatency = process.env.SRT_LATENCY_MS     || '200';
-  const srtUrl     = `srt://${srtHost}:${srtPort}?streamid=${streamId}&latency=${srtLatency}&mode=caller`;
+  const srtUrl     = `srt://${srtHost}:${srtPort}?streamid=publish:${streamId}&latency=${srtLatency}&mode=caller`;
 
   const hlsDir     = path.join(process.env.HLS_OUTPUT_DIR || '/var/www/hls', streamId);
   fs.mkdirSync(hlsDir, { recursive: true });

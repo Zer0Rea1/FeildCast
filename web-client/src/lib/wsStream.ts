@@ -108,25 +108,37 @@ export class SrtStreamer {
   }
 }
 
-// Get camera + microphone stream with quality settings
+// Get camera + microphone stream with quality settings.
+// Pass deviceId to target an exact camera; otherwise facingMode is used as a hint.
 export async function getCameraStream(
   resolution: string,
   fps: number,
   facingMode: 'user' | 'environment' = 'environment',
+  deviceId?: string,
 ): Promise<MediaStream> {
   // Always request landscape: use the larger dimension as width
   const parts = resolution.split('x').map(Number);
   const width  = Math.max(parts[0], parts[1]);
   const height = Math.min(parts[0], parts[1]);
 
+  const videoConstraints: MediaTrackConstraints = deviceId
+    ? {
+        deviceId:    { exact: deviceId },
+        width:       { ideal: width },
+        height:      { ideal: height },
+        aspectRatio: { ideal: 16 / 9 },
+        frameRate:   { ideal: fps },
+      }
+    : {
+        width:       { ideal: width },
+        height:      { ideal: height },
+        aspectRatio: { ideal: 16 / 9 },
+        frameRate:   { ideal: fps },
+        facingMode:  { ideal: facingMode },
+      };
+
   return navigator.mediaDevices.getUserMedia({
-    video: {
-      width:       { ideal: width },
-      height:      { ideal: height },
-      aspectRatio: { ideal: 16 / 9 },
-      frameRate:   { ideal: fps },
-      facingMode:  { ideal: facingMode },
-    },
+    video: videoConstraints,
     audio: {
       echoCancellation: true,
       noiseSuppression: true,

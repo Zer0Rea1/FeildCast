@@ -5,12 +5,14 @@ import { authApi } from '../api/client';
 import { saveAuth } from '../lib/auth';
 
 export default function Register() {
-  const [name, setName]           = useState('');
-  const [email, setEmail]         = useState('');
-  const [password, setPassword]   = useState('');
-  const [confirm, setConfirm]     = useState('');
-  const [error, setError]         = useState('');
-  const [loading, setLoading]     = useState(false);
+  const [name, setName]                 = useState('');
+  const [email, setEmail]               = useState('');
+  const [designation, setDesignation]   = useState('');
+  const [city, setCity]                 = useState('');
+  const [password, setPassword]         = useState('');
+  const [confirm, setConfirm]           = useState('');
+  const [error, setError]               = useState('');
+  const [loading, setLoading]           = useState(false);
   const navigate = useNavigate();
 
   async function handleSubmit(e: FormEvent) {
@@ -20,7 +22,7 @@ export default function Register() {
     setLoading(true); setError('');
     try {
       // Register always creates a REPORTER — admin can promote to ANCHOR later
-      const { data } = await authApi.register(name, email, password);
+      const { data } = await authApi.register(name, email, password, designation, city);
       saveAuth(data.token, data.user);
       navigate('/conferences');
     } catch (e: any) {
@@ -46,6 +48,18 @@ export default function Register() {
         <input
           type="email" value={email} onChange={e => setEmail(e.target.value)}
           placeholder="your@email.com" required style={S.input}
+        />
+
+        <label style={S.label}>Reporter Designation / Role</label>
+        <input
+          type="text" value={designation} onChange={e => setDesignation(e.target.value)}
+          placeholder="e.g. Senior Correspondent" required style={S.input}
+        />
+
+        <label style={S.label}>Reporter City</label>
+        <input
+          type="text" value={city} onChange={e => setCity(e.target.value)}
+          placeholder="e.g. Islamabad" required style={S.input}
         />
 
         <label style={S.label}>Password</label>

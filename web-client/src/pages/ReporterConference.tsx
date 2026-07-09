@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useIsMobile } from '../hooks/useIsMobile';
+import { useCameraDevices } from '../hooks/useCameraDevices';
 import {
   LiveKitRoom,
   VideoTrack,
@@ -8,6 +9,7 @@ import {
   RoomAudioRenderer,
   isTrackReference,
   useLocalParticipant,
+  useRoomContext,
 } from '@livekit/components-react';
 import '@livekit/components-styles';
 import { Track } from 'livekit-client';
@@ -41,7 +43,7 @@ export default function ReporterConference() {
   const [error, setError]                   = useState('');
   const [lkToken, setLkToken]               = useState('');
   const [cameraOff, setCameraOff]           = useState(false);
-  const [facingMode, setFacingMode]         = useState<'environment' | 'user'>('environment');
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
   const [dualMode, setDualMode]             = useState<boolean>(detectDualDefault());
   const [streamSettings, setStreamSettings] = useState({
     resolution: '1280x720', bitrate: 2500, fps: 25,
@@ -106,8 +108,14 @@ export default function ReporterConference() {
   }
 
   // Solo capture — opens the camera ourselves (SRT-only path).
-  function getSoloStream(facing: 'environment' | 'user') {
-    return getCameraStream(streamSettings.resolution, streamSettings.fps, facing);
+  // When a specific deviceId is selected use it; otherwise fall back to 'environment'.
+  function getSoloStream(deviceId: string) {
+    return getCameraStream(
+      streamSettings.resolution,
+      streamSettings.fps,
+      'environment',  // facingMode hint, ignored when deviceId is provided
+      deviceId || undefined,
+    );
   }
 
   // Tear down the SRT side. Only stop tracks we own (solo). Dual tracks stay live in LiveKit.
@@ -123,11 +131,6 @@ export default function ReporterConference() {
   }
 
   function stopStream() { endStream(); setCameraOff(false); }
-
-  function toggleCameraStream() {
-    if (streamRef.current) streamRef.current.getVideoTracks().forEach(t => { t.enabled = !t.enabled; });
-    setCameraOff(prev => !prev);
-  }
 
   function leave() { stopStream(); navigate('/conferences'); }
 
@@ -159,15 +162,16 @@ export default function ReporterConference() {
 
   /* ── Props shared between desktop + mobile ── */
   const ctrlBarProps = {
-    streaming, cameraOff, isMobile, facingMode, dualMode,
+    streaming, cameraOff, isMobile, selectedDeviceId, dualMode,
+    streamRef,          // needed so control bar can mute SRT audio/video tracks
     confMeta: `${streamSettings.resolution} · ${streamSettings.bitrate} kbps`,
     onBeginStream: beginStream,
     onEndStream: endStream,
     onGetSoloStream: getSoloStream,
-    onSetFacing: setFacingMode,
+    onSetDeviceId: setSelectedDeviceId,
     onSetDualMode: setDualMode,
     onStopStream: stopStream,
-    onCameraToggle: toggleCameraStream,
+    onSetCameraOff: setCameraOff,   // let control bar update this state
     onError: setError,
   };
 
@@ -421,25 +425,74 @@ function SidebarTile({ track, label, isSelf }: { track: any; label: string; isSe
    CONTROL BAR — desktop: single row | mobile: icon row + main btn
 ═════════════════════════════════════════════════════════════ */
 function ReporterControlBar({
-  streaming, cameraOff, isMobile, facingMode, dualMode, confMeta,
-  onBeginStream, onEndStream, onGetSoloStream, onSetFacing, onSetDualMode,
-  onStopStream, onCameraToggle, onError,
+  streaming, cameraOff, isMobile, selectedDeviceId, dualMode, confMeta,
+  streamRef,
+  onBeginStream, onEndStream, onGetSoloStream, onSetDeviceId, onSetDualMode,
+  onStopStream, onSetCameraOff, onError,
 }: {
   streaming: boolean; cameraOff: boolean; isMobile: boolean;
-  facingMode: 'environment' | 'user'; dualMode: boolean; confMeta: string;
+  selectedDeviceId: string; dualMode: boolean; confMeta: string;
+  streamRef: React.RefObject<MediaStream | null>;
   onBeginStream: (stream: MediaStream, dual: boolean) => Promise<void>;
   onEndStream: () => void;
-  onGetSoloStream: (facing: 'environment' | 'user') => Promise<MediaStream>;
-  onSetFacing: (facing: 'environment' | 'user') => void;
+  onGetSoloStream: (deviceId: string) => Promise<MediaStream>;
+  onSetDeviceId: (id: string) => void;
   onSetDualMode: (v: boolean) => void;
   onStopStream: () => void;
-  onCameraToggle: () => void;
+  onSetCameraOff: (off: boolean | ((prev: boolean) => boolean)) => void;
   onError: (msg: string) => void;
 }) {
+  const room = useRoomContext();
+  const cameras = useCameraDevices();
   const { localParticipant } = useLocalParticipant();
   const micEnabled = localParticipant.isMicrophoneEnabled;
+  const camEnabled = localParticipant.isCameraEnabled;
   const [starting, setStarting] = useState(false);
+  const isSwitchingRef = useRef(false);
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+  // Auto-select the first camera once devices are enumerated
+  useEffect(() => {
+    if (cameras.length > 0 && !selectedDeviceId) {
+      onSetDeviceId(cameras[0].deviceId);
+    }
+  }, [cameras]);
+
+  // ── Unified mic toggle ──
+  // Mutes/unmutes LiveKit conference AND the SRT audio track simultaneously.
+  async function handleMicToggle() {
+    const nextEnabled = !micEnabled;
+    // Toggle LiveKit conference mic
+    await localParticipant.setMicrophoneEnabled(nextEnabled).catch(() => {});
+    // Mirror to the SRT stream's audio track (dual or solo) if active
+    if (streaming && streamRef.current) {
+      streamRef.current.getAudioTracks().forEach(t => { t.enabled = nextEnabled; });
+    }
+  }
+
+  // ── Unified camera toggle ──
+  // Coordinates LiveKit camera + SRT video track so both go on/off together.
+  async function handleCameraToggle() {
+    const nextOn = !camEnabled;
+
+    if (!streaming) {
+      // Not streaming — just toggle LiveKit's camera (the SRT preview isn't running).
+      await localParticipant.setCameraEnabled(nextOn).catch(() => {});
+    } else if (dualMode) {
+      // Dual mode: LiveKit owns the track; toggle it, then mirror to SRT stream.
+      await localParticipant.setCameraEnabled(nextOn).catch(() => {});
+      if (streamRef.current) {
+        streamRef.current.getVideoTracks().forEach(t => { t.enabled = nextOn; });
+      }
+    } else {
+      // Solo mode: LiveKit camera is already off; only toggle the SRT video track.
+      if (streamRef.current) {
+        streamRef.current.getVideoTracks().forEach(t => { t.enabled = nextOn; });
+      }
+    }
+
+    onSetCameraOff(!nextOn);
+  }
 
   // Poll until LiveKit has actually published the local camera track — setCameraEnabled()
   // can resolve slightly before the publication + mediaStreamTrack are attached.
@@ -460,6 +513,13 @@ function ReporterControlBar({
     return new MediaStream(audioTrack ? [videoTrack, audioTrack] : [videoTrack]);
   }
 
+  // Build LiveKit camera constraints from the selected device
+  function lkCameraOpts() {
+    return selectedDeviceId
+      ? { deviceId: selectedDeviceId }
+      : {};
+  }
+
   async function handleGoLive() {
     setStarting(true);
     onError('');
@@ -467,7 +527,7 @@ function ReporterControlBar({
       if (dualMode) {
         // Reuse LiveKit's single camera capture for SRT too — no second getUserMedia.
         if (!localParticipant.isCameraEnabled) {
-          await localParticipant.setCameraEnabled(true, { facingMode });
+          await localParticipant.setCameraEnabled(true, lkCameraOpts());
         }
         if (!localParticipant.isMicrophoneEnabled) {
           await localParticipant.setMicrophoneEnabled(true);
@@ -479,7 +539,7 @@ function ReporterControlBar({
           await localParticipant.setCameraEnabled(false);
           await sleep(350);
         }
-        const s = await onGetSoloStream(facingMode);
+        const s = await onGetSoloStream(selectedDeviceId);
         await onBeginStream(s, false);
       }
     } catch (e: any) {
@@ -494,36 +554,48 @@ function ReporterControlBar({
     if (!dualMode) {
       // Solo: give the SRT camera time to release, then re-enable LiveKit's for the self-view.
       await sleep(400);
-      localParticipant.setCameraEnabled(true, { facingMode }).catch(() => {});
+      localParticipant.setCameraEnabled(true, lkCameraOpts()).catch(() => {});
     }
     // Dual: leave LiveKit camera running — reporter stays visible in the conference.
   }
 
-  async function handleFlip() {
-    const next: 'environment' | 'user' = facingMode === 'environment' ? 'user' : 'environment';
-    onSetFacing(next);
+  // Switch camera mid-stream or pre-stream.
+  // Uses isSwitchingRef to prevent overlapping switches causing device conflicts.
+  async function handleCameraChange(deviceId: string) {
+    if (isSwitchingRef.current) return;  // ignore rapid clicks
+    isSwitchingRef.current = true;
+    onSetDeviceId(deviceId);
+    onError('');
 
-    if (!streaming) {
-      // Not live — just flip LiveKit's preview camera if it's on.
-      if (localParticipant.isCameraEnabled) {
-        await localParticipant.setCameraEnabled(true, { facingMode: next }).catch(() => {});
-      }
-      return;
-    }
-
-    // Live — restart the SRT side on the new camera.
     try {
+      if (!streaming) {
+        // Not live — just update LiveKit's active videoinput device if camera is enabled.
+        if (localParticipant.isCameraEnabled) {
+          await room.switchActiveDevice('videoinput', deviceId);
+        }
+        return;
+      }
+
+      // Live — stop SRT first, then switch, then restart.
+      // This ensures the old device is fully released before the new one opens.
       onEndStream();
-      await sleep(300);
+      await sleep(350);  // let MediaRecorder + WebSocket close cleanly
+
       if (dualMode) {
-        await localParticipant.setCameraEnabled(true, { facingMode: next });
-        await onBeginStream(await buildStreamFromLk(), true);
+        // Dual: LiveKit owns the camera — tell it to switch active device under the hood.
+        await room.switchActiveDevice('videoinput', deviceId);
+        await sleep(250);  // give LiveKit track time to re-initialize
+        const stream = await buildStreamFromLk();
+        await onBeginStream(stream, true);
       } else {
-        const s = await onGetSoloStream(next);
+        // Solo: LiveKit's camera is already off — just open the new device directly.
+        const s = await onGetSoloStream(deviceId);
         await onBeginStream(s, false);
       }
     } catch (e: any) {
       onError(e?.message || 'Failed to switch camera — try again.');
+    } finally {
+      isSwitchingRef.current = false;
     }
   }
 
@@ -531,10 +603,29 @@ function ReporterControlBar({
   if (isMobile) {
     return (
       <>
+        {/* Camera picker dropdown */}
+        {cameras.length > 1 && (
+          <div style={ST.cameraPickerWrap}>
+            <span style={ST.cameraPickerIcon}>📷</span>
+            <select
+              value={selectedDeviceId}
+              onChange={e => handleCameraChange(e.target.value)}
+              style={ST.cameraPicker}
+            >
+              {cameras.map(cam => (
+                <option key={cam.deviceId} value={cam.deviceId}>
+                  {cam.facing === 'user' ? '🤳 ' : cam.facing === 'environment' ? '📸 ' : '📷 '}
+                  {cam.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         {/* Row 1: icon buttons */}
         <div style={ST.mobileIconRow}>
           <button
-            onClick={() => localParticipant.setMicrophoneEnabled(!micEnabled).catch(() => {})}
+            onClick={handleMicToggle}
             style={{ ...ST.mobileIconBtn, ...(!micEnabled ? ST.mobileIconBtnOff : {}) }}
             title={micEnabled ? 'Mute' : 'Unmute'}
           >
@@ -543,21 +634,12 @@ function ReporterControlBar({
           </button>
 
           <button
-            onClick={onCameraToggle}
+            onClick={handleCameraToggle}
             style={{ ...ST.mobileIconBtn, ...(cameraOff ? ST.mobileIconBtnOff : {}) }}
             title={cameraOff ? 'Camera On' : 'Camera Off'}
           >
             <span style={ST.mobileIconEmoji}>{cameraOff ? '📷' : '📹'}</span>
             <span style={ST.mobileIconLabel}>{cameraOff ? 'Cam Off' : 'Camera'}</span>
-          </button>
-
-          <button
-            onClick={handleFlip}
-            style={ST.mobileIconBtn}
-            title={facingMode === 'environment' ? 'Front camera' : 'Back camera'}
-          >
-            <span style={ST.mobileIconEmoji}>🔄</span>
-            <span style={ST.mobileIconLabel}>{facingMode === 'environment' ? 'Back' : 'Front'}</span>
           </button>
 
           <button
@@ -590,43 +672,60 @@ function ReporterControlBar({
 
   /* ── Desktop: single row ── */
   return (
-    <div style={ST.controlRow}>
-      <div style={ST.confInfo}><span style={ST.confMeta}>{confMeta}</span></div>
-      <div style={ST.mediaButtons}>
-        <button
-          onClick={() => localParticipant.setMicrophoneEnabled(!micEnabled).catch(() => {})}
-          style={{ ...ST.mediaBtn, ...(!micEnabled ? ST.mediaBtnOff : {}) }}
-        >
-          {micEnabled ? '🎤' : '🔇'}
-          <span style={ST.mediaBtnLabel}>{micEnabled ? 'Mute' : 'Unmuted'}</span>
-        </button>
-        <button
-          onClick={onCameraToggle}
-          style={{ ...ST.mediaBtn, ...(cameraOff ? ST.mediaBtnOff : {}) }}
-        >
-          {cameraOff ? '📷' : '📹'}
-          <span style={ST.mediaBtnLabel}>{cameraOff ? 'Cam Off' : 'Camera'}</span>
-        </button>
-        <button onClick={handleFlip} style={ST.mediaBtn}>
-          🔄
-          <span style={ST.mediaBtnLabel}>{facingMode === 'environment' ? 'Back' : 'Front'}</span>
-        </button>
-        <button
-          onClick={() => onSetDualMode(!dualMode)}
-          disabled={streaming}
-          style={{ ...ST.mediaBtn, ...(dualMode ? ST.dualOn : {}), opacity: streaming ? 0.5 : 1 }}
-          title={dualMode ? 'Publishing to conference + SRT' : 'SRT only (conference via server)'}
-        >
-          {dualMode ? '🔗' : '🔌'}
-          <span style={ST.mediaBtnLabel}>{dualMode ? 'Dual' : 'SRT'}</span>
-        </button>
-      </div>
-      {!streaming
-        ? <button onClick={handleGoLive} disabled={starting}
-            style={{ ...ST.liveBtn, opacity: starting ? 0.6 : 1 }}>
-            {starting ? '⏳ Starting…' : dualMode ? '🔴 Go Live (Dual)' : '🔴 Go Live'}
+    <div style={ST.desktopControlsWrap}>
+      {/* Camera picker */}
+      {cameras.length > 0 && (
+        <div style={ST.cameraPickerWrap}>
+          <span style={ST.cameraPickerIcon}>📷</span>
+          <select
+            value={selectedDeviceId}
+            onChange={e => handleCameraChange(e.target.value)}
+            style={ST.cameraPicker}
+          >
+            {cameras.map(cam => (
+              <option key={cam.deviceId} value={cam.deviceId}>
+                {cam.facing === 'user' ? '🤳 ' : cam.facing === 'environment' ? '📸 ' : '📷 '}
+                {cam.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <div style={ST.controlRow}>
+        <div style={ST.confInfo}><span style={ST.confMeta}>{confMeta}</span></div>
+        <div style={ST.mediaButtons}>
+          <button
+            onClick={handleMicToggle}
+            style={{ ...ST.mediaBtn, ...(!micEnabled ? ST.mediaBtnOff : {}) }}
+          >
+            {micEnabled ? '🎤' : '🔇'}
+            <span style={ST.mediaBtnLabel}>{micEnabled ? 'Mute' : 'Unmuted'}</span>
           </button>
-        : <button onClick={handleStop} style={ST.stopBtn}>⏹ Stop</button>}
+          <button
+            onClick={handleCameraToggle}
+            style={{ ...ST.mediaBtn, ...(cameraOff ? ST.mediaBtnOff : {}) }}
+          >
+            {cameraOff ? '📷' : '📹'}
+            <span style={ST.mediaBtnLabel}>{cameraOff ? 'Cam Off' : 'Camera'}</span>
+          </button>
+          <button
+            onClick={() => onSetDualMode(!dualMode)}
+            disabled={streaming}
+            style={{ ...ST.mediaBtn, ...(dualMode ? ST.dualOn : {}), opacity: streaming ? 0.5 : 1 }}
+            title={dualMode ? 'Publishing to conference + SRT' : 'SRT only (conference via server)'}
+          >
+            {dualMode ? '🔗' : '🔌'}
+            <span style={ST.mediaBtnLabel}>{dualMode ? 'Dual' : 'SRT'}</span>
+          </button>
+        </div>
+        {!streaming
+          ? <button onClick={handleGoLive} disabled={starting}
+              style={{ ...ST.liveBtn, opacity: starting ? 0.6 : 1 }}>
+              {starting ? '⏳ Starting…' : dualMode ? '🔴 Go Live (Dual)' : '🔴 Go Live'}
+            </button>
+          : <button onClick={handleStop} style={ST.stopBtn}>⏹ Stop</button>}
+      </div>
     </div>
   );
 }
@@ -907,4 +1006,36 @@ const ST: Record<string, React.CSSProperties> = {
                   textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   selfGreenDot: { position: 'absolute', top: 6, right: 6, width: 6, height: 6,
                   borderRadius: '50%', background: '#34d399' },
+
+  /* ── Camera picker (desktop + mobile) ── */
+  desktopControlsWrap: {
+    padding: '0 14px 12px',
+    background: '#111',
+    borderTop: '1px solid #1e1e1e',
+    flexShrink: 0,
+  },
+  cameraPickerWrap: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 0 8px',
+    borderBottom: '1px solid #1e1e1e',
+    marginBottom: 8,
+  },
+  cameraPickerIcon: {
+    fontSize: 14,
+    flexShrink: 0,
+  },
+  cameraPicker: {
+    flex: 1,
+    background: '#1e1e1e',
+    border: '1px solid #2a2a2a',
+    color: '#ccc',
+    borderRadius: 8,
+    padding: '5px 10px',
+    fontSize: 12,
+    cursor: 'pointer',
+    outline: 'none',
+    appearance: 'auto' as const,
+  },
 };

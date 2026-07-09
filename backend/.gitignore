@@ -16,7 +16,7 @@ dist/
 build/
 out/
 coverage/
-
+.env
 # Dependencies caches
 *.tsbuildinfo
 

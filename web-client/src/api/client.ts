@@ -29,8 +29,8 @@ export default api;
 export const authApi = {
   login: (email: string, password: string) =>
     api.post('/auth/login', { email, password }),
-  register: (name: string, email: string, password: string) =>
-    api.post('/auth/register', { name, email, password, role: 'REPORTER' }),
+  register: (name: string, email: string, password: string, designation?: string, city?: string) =>
+    api.post('/auth/register', { name, email, password, role: 'REPORTER', designation, city }),
   savePushToken: (token: string) =>
     api.patch('/auth/push-token', { expoPushToken: token }),
 };
