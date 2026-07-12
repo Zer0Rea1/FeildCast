@@ -153,7 +153,7 @@ export default function AdminConferenceDetail() {
                 {liveReporters.map((p: any) => (
                   <HLSPlayer
                     key={p.id}
-                    src={`/hls/${p.streamId}/index.m3u8`}
+                    src={`${import.meta.env.VITE_HLS_URL}/${p.streamId}/index.m3u8`}
                     reporterName={p.user.name}
                     bitrate={p.bitrate}
                   />
