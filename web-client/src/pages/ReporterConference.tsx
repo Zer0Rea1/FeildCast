@@ -19,6 +19,13 @@ import { SrtStreamer, getCameraStream } from '../lib/wsStream';
 
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL || 'ws://localhost:7880';
 
+// The backend rejects a reconnect with "Stream already active" if the
+// *previous* connection died silently (flaky network, no clean close) —
+// its server-side heartbeat needs up to ~30s to notice and clear the stale
+// session. Retry through that window instead of surfacing a hard error.
+const MAX_STALE_RETRIES    = 5;
+const STALE_RETRY_DELAY_MS = 7000;
+
 // Auto-pick dual mode default from the connection type.
 // Dual = publish camera to LiveKit AND SRT at once (2x uplink).
 // WiFi/ethernet/unknown → ON. Cellular / slow link → OFF (protect the air feed).
@@ -56,11 +63,14 @@ export default function ReporterConference() {
   // Tracks whether the *running* stream is dual (LiveKit-owned tracks) — so we
   // never stop LiveKit's camera/mic when tearing down the SRT side.
   const dualActiveRef = useRef(false);
+  const retryCountRef   = useRef(0);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     load();
     return () => {
       clearInterval(timerRef.current);
+      clearTimeout(retryTimeoutRef.current);
       streamerRef.current?.stop();
       // In dual mode the tracks belong to LiveKit; LiveKitRoom unmount cleans them up.
       if (!dualActiveRef.current) {
@@ -93,10 +103,22 @@ export default function ReporterConference() {
       const token = getToken()!;
       const streamer = new SrtStreamer({
         onReady: (sid) => {
+          retryCountRef.current = 0;
           setStreamId(sid); setStreaming(true);
           timerRef.current = setInterval(() => setDuration(d => d + 1), 1000);
         },
-        onError: (msg) => { setError(msg); setStreaming(false); clearInterval(timerRef.current); },
+        onError: (msg) => {
+          clearInterval(timerRef.current);
+          const isStaleLock = /already (active|streaming)/i.test(msg);
+          if (isStaleLock && retryCountRef.current < MAX_STALE_RETRIES) {
+            retryCountRef.current++;
+            setStreaming(false);
+            setError(`Reconnecting… (${retryCountRef.current}/${MAX_STALE_RETRIES})`);
+            retryTimeoutRef.current = setTimeout(() => beginStream(stream, dual), STALE_RETRY_DELAY_MS);
+            return;
+          }
+          setError(msg); setStreaming(false);
+        },
         onStats:  (bytes) => setBytesSent(bytes),
         onDisconnect: () => { setStreaming(false); clearInterval(timerRef.current); },
       });
@@ -120,6 +142,8 @@ export default function ReporterConference() {
 
   // Tear down the SRT side. Only stop tracks we own (solo). Dual tracks stay live in LiveKit.
   function endStream() {
+    clearTimeout(retryTimeoutRef.current);
+    retryCountRef.current = 0;
     streamerRef.current?.stop();
     if (!dualActiveRef.current) {
       streamRef.current?.getTracks().forEach(t => t.stop());

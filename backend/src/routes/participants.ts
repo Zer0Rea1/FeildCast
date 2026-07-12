@@ -16,6 +16,9 @@ router.post('/:id/participants', requireAuth, requireAdmin, async (req: AuthRequ
 
   const conference = await prisma.conference.findUnique({ where: { id } });
   if (!conference) return res.status(404).json({ error: 'Conference not found' });
+  if (conference.adminId !== req.user!.userId) {
+    return res.status(403).json({ error: 'Not authorized for this conference' });
+  }
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -45,9 +48,16 @@ router.post('/:id/participants', requireAuth, requireAdmin, async (req: AuthRequ
 });
 
 // DELETE /api/conferences/:id/participants/:userId — admin removes participant
-router.delete('/:id/participants/:userId', requireAuth, requireAdmin, async (req, res) => {
+router.delete('/:id/participants/:userId', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   const id = req.params.id as string;
   const userId = req.params.userId as string;
+
+  const conference = await prisma.conference.findUnique({ where: { id } });
+  if (!conference) return res.status(404).json({ error: 'Conference not found' });
+  if (conference.adminId !== req.user!.userId) {
+    return res.status(403).json({ error: 'Not authorized for this conference' });
+  }
+
   await prisma.participant.delete({
     where: {
       conferenceId_userId: {

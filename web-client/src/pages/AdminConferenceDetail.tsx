@@ -10,6 +10,7 @@ interface StreamInfo {
   reporterName: string;
   streamId:     string | null;
   status:       string;
+  isLive:       boolean;
   resolution:   string | null;
   bitrate:      number | null;
   srtUrl:       string | null;
@@ -88,7 +89,7 @@ export default function AdminConferenceDetail() {
   }
 
   const liveReporters = conf.participants.filter(
-    (p: any) => p.role === 'REPORTER' && p.streamId && p.status === 'JOINED'
+    (p: any) => p.role === 'REPORTER' && p.isLive
   );
   const availableUsers = users.filter(
     (u: any) => !conf.participants.find((p: any) => p.user?.id === u.id)
@@ -192,7 +193,7 @@ export default function AdminConferenceDetail() {
                 </div>
 
                 {(streamsData.streams as StreamInfo[]).map((s, i) => {
-                  const isActive = s.status === 'JOINED' && !!s.streamId;
+                  const isActive = s.isLive;
                   const urlKey   = `url-${i}`;
                   const idKey    = `id-${i}`;
                   return (
@@ -268,7 +269,7 @@ export default function AdminConferenceDetail() {
                 <span style={S.participantMeta}>
                   {p.role} · {p.status}
                 </span>
-                {p.streamId && (
+                {p.isLive && (
                   <span style={S.streaming}>● streaming</span>
                 )}
               </div>

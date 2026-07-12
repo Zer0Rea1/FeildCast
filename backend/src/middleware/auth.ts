@@ -11,7 +11,7 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
     return res.status(401).json({ error: 'No token provided' });
   }
   try {
-    const payload = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET!) as any;
+    const payload = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET!, { algorithms: ['HS256'] }) as any;
     req.user = payload;
     next();
   } catch {

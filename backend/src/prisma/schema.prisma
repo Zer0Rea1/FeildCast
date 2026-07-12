@@ -48,6 +48,7 @@ model Participant {
   bitrate      Int?
   fps          Int?
   streamId     String?
+  isLive       Boolean     @default(false)
   joinedAt     DateTime?
   leftAt       DateTime?
   status       ParticipantStatus @default(INVITED)

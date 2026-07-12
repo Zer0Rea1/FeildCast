@@ -86,6 +86,14 @@ export async function generateLiveKitToken(
     name: participantName,
   });
 
+  // NOTE: `audioOnly` is accepted here but intentionally NOT enforced via
+  // canPublishSources — reporters actually do publish camera through this
+  // same LiveKit grant (see ReporterConference.tsx's setCameraEnabled calls
+  // for dual-mode / direct-publish reporters). The frontend never reads
+  // `audioOnly` from the token response either, so this flag appears to be
+  // unused/stale rather than a real restriction that was forgotten. Enforcing
+  // it here would silently break reporter camera publishing. Left as-is —
+  // flagged for a product decision rather than fixed blind.
   token.addGrant({
     roomJoin: true,
     room: roomName,

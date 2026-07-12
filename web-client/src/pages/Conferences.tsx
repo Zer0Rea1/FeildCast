@@ -9,6 +9,7 @@ interface Participant {
   role: string;
   status: string;
   streamId: string | null;
+  isLive: boolean;
   bitrate: number | null;
   user: { id: string; name: string; role: string };
 }
@@ -52,7 +53,7 @@ export default function Conferences() {
   // All live reporter streams across all conferences (admin HLS monitor)
   const liveStreams = conferences.flatMap(conf =>
     conf.participants
-      .filter(p => p.role === 'REPORTER' && p.streamId && p.status === 'JOINED')
+      .filter(p => p.role === 'REPORTER' && p.isLive)
       .map(p => ({ ...p, confTitle: conf.title, confId: conf.id }))
   );
 
@@ -102,7 +103,7 @@ export default function Conferences() {
                   <div key={p.id}>
                     <div style={S.hlsConfLabel}>{p.confTitle}</div>
                     <HLSPlayer
-                      src={`/hls/${p.streamId}/index.m3u8`}
+                      src={`${import.meta.env.VITE_HLS_URL}/${p.streamId}/index.m3u8`}
                       reporterName={p.user.name}
                       bitrate={p.bitrate ?? undefined}
                     />

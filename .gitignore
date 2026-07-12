@@ -21,6 +21,8 @@ coverage/
 *.tsbuildinfo
 .env
 /infra/.env
+/ngrok.yml
+
 # IDE / editors
 .vscode/
 .idea/

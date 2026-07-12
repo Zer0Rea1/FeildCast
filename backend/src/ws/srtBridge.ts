@@ -13,7 +13,20 @@ import path from 'path';
 import url  from 'url';
 
 const prisma = new PrismaClient();
-const activeStreams = new Map<string, ChildProcess>();
+const activeStreams    = new Map<string, ChildProcess>();
+// Bumped on every new connection for a given reporter, so a stale delayed
+// cleanup (see the ws 'close' handler) can tell whether it's still cleaning
+// up after ITS OWN session or whether a newer one has since reused the same
+// streamId/hlsDir — restarting a stream fast (without leaving the room)
+// reuses hlsDir, and the old session's 15s-later rmSync would otherwise
+// delete the new session's live segments out from under it mid-write.
+const streamGeneration = new Map<string, number>();
+
+// Strips newlines/control chars so a reporter-controlled name can't forge
+// fake log lines or inject terminal escape sequences into server logs.
+const forLog = (s: string) => s.replace(/[\r\n\x00-\x1f\x7f]/g, '');
+
+const HLS_ROOT = path.resolve(process.env.HLS_OUTPUT_DIR || '/var/www/hls');
 
 export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
   const query        = url.parse(req.url || '', true).query;
@@ -32,7 +45,7 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
   // 1. Verify reporter JWT
   let payload: any;
   try {
-    payload = jwt.verify(token, process.env.JWT_SECRET!);
+    payload = jwt.verify(token, process.env.JWT_SECRET!, { algorithms: ['HS256'] });
   } catch {
     ws.send(JSON.stringify({ type: 'error', message: 'Invalid or expired token' }));
     ws.close(1008);
@@ -61,8 +74,14 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
     return;
   }
 
-  // 4. Generate unique SRT streamid
-  const streamId = generateStreamId(conferenceId, participant.user.name);
+  const myGeneration = (streamGeneration.get(streamKey) || 0) + 1;
+  streamGeneration.set(streamKey, myGeneration);
+
+  // 4. Reuse the participant's existing SRT streamid if they've streamed before
+  //    in this conference (e.g. reconnecting after a camera switch or dropped
+  //    connection) — only mint a new one the first time, so playout software
+  //    (OBS/vMix/Caspar) never needs to be reconfigured with a new stream URL.
+  const streamId = participant.streamId ?? generateStreamId(conferenceId, participant.user.name);
 
   // 5. Create LiveKit Ingress for this reporter
   //    FFmpeg will push RTMP to this URL — LiveKit puts it in the conference room
@@ -71,7 +90,7 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
   if (directPublish) {
     // Dual mode: reporter's phone publishes camera to LiveKit itself via WebRTC.
     // Skip Ingress entirely — FFmpeg will only tee to SRT + HLS.
-    console.log(`[Bridge] ${participant.user.name} in DUAL mode — reporter publishes to LiveKit directly, skipping Ingress`);
+    console.log(`[Bridge] ${forLog(participant.user.name)} in DUAL mode — reporter publishes to LiveKit directly, skipping Ingress`);
   } else {
     try {
       ingressInfo = await createReporterIngress(
@@ -79,17 +98,20 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
         userId,
         participant.user.name,
       );
-      console.log(`[Bridge] Created LiveKit Ingress for ${participant.user.name}: ${ingressInfo.rtmpUrl}`);
+      console.log(`[Bridge] Created LiveKit Ingress for ${forLog(participant.user.name)}: ${ingressInfo.rtmpUrl}`);
     } catch (err) {
       // Ingress failure is non-fatal — SRT broadcast still works without it
       console.warn(`[Bridge] LiveKit Ingress creation failed: ${err}. Continuing without it.`);
     }
   }
 
-  // 6. Save streamId to DB
+  // 6. Save streamId + mark as live. isLive is the "actively streaming right
+  //    now" signal shown by the admin dashboard — kept separate from `status`
+  //    (room membership: JOINED/LEFT) so stopping/restarting a stream never
+  //    touches whether the reporter is considered "in the room".
   await prisma.participant.update({
     where: { conferenceId_userId: { conferenceId, userId } },
-    data:  { streamId },
+    data:  { streamId, isLive: true },
   });
 
   // 7. Create session record
@@ -103,7 +125,16 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
   const srtLatency = process.env.SRT_LATENCY_MS     || '200';
   const srtUrl     = `srt://${srtHost}:${srtPort}?streamid=publish:${streamId}&latency=${srtLatency}&mode=caller`;
 
-  const hlsDir     = path.join(process.env.HLS_OUTPUT_DIR || '/var/www/hls', streamId);
+  const hlsDir = path.resolve(HLS_ROOT, streamId);
+  if (hlsDir !== HLS_ROOT && !hlsDir.startsWith(HLS_ROOT + path.sep)) {
+    // streamId escaped the HLS root (shouldn't happen post-sanitization in
+    // generateStreamId, but this is the last line of defense before any
+    // filesystem call touches an attacker-influenced path).
+    console.error(`[Bridge] Refusing to use HLS dir outside root: ${hlsDir}`);
+    ws.send(JSON.stringify({ type: 'error', message: 'Invalid stream state' }));
+    ws.close(1011);
+    return;
+  }
   fs.mkdirSync(hlsDir, { recursive: true });
 
   const { resolution, bitrate, fps } = participant;
@@ -215,7 +246,7 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
 
   // 13. On disconnect — clean everything up
   ws.on('close', async () => {
-    console.log(`[Bridge] Disconnected: ${participant.user.name} — ${(bytesSent / 1e6).toFixed(2)} MB sent`);
+    console.log(`[Bridge] Disconnected: ${forLog(participant.user.name)} — ${(bytesSent / 1e6).toFixed(2)} MB sent`);
 
     ffmpeg.stdin.end();
     setTimeout(() => ffmpeg.kill('SIGTERM'), 2000);
@@ -226,9 +257,15 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
       await deleteReporterIngress(ingressInfo.ingressId).catch(() => {});
     }
 
-    // Cleanup HLS segments after delay so player can finish buffering
+    // Cleanup HLS segments after delay so player can finish buffering.
+    // Guarded by generation: if the reporter has already restarted (fast
+    // restart without leaving the room reuses this same hlsDir), a newer
+    // generation will have claimed streamKey by the time this fires — skip
+    // the delete so we don't rm the directory a live FFmpeg is writing into.
     setTimeout(() => {
-      fs.rmSync(hlsDir, { recursive: true, force: true });
+      if (streamGeneration.get(streamKey) === myGeneration) {
+        fs.rmSync(hlsDir, { recursive: true, force: true });
+      }
     }, 15000);
 
     // Update DB
@@ -237,9 +274,13 @@ export async function handleSrtBridge(ws: WebSocket, req: IncomingMessage) {
       data:  { endedAt: new Date(), bytesSent: BigInt(bytesSent) },
     }).catch(() => {});
 
+    // Keep streamId — it stays stable across reconnects (camera switches,
+    // network drops) for the lifetime of this participant's conference membership.
+    // Only flip isLive off here; `status` tracks room membership (set by the
+    // join endpoint) and must not change just because streaming stopped.
     await prisma.participant.update({
       where: { conferenceId_userId: { conferenceId, userId } },
-      data:  { status: 'LEFT', leftAt: new Date(), streamId: null },
+      data:  { isLive: false },
     }).catch(() => {});
   });
 

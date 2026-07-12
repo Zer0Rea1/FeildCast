@@ -1,4 +1,8 @@
 import 'dotenv/config';
+// Must be imported before any router that defines async route handlers —
+// it patches Express to forward rejected promises to the error handler
+// below, instead of crashing the process on an unhandled rejection.
+import 'express-async-errors';
 import express from 'express';
 import http from 'http';
 import WebSocket from 'ws';
@@ -61,8 +65,46 @@ app.get('/health', (_, res) => res.json({
   srtTarget: `srt://${process.env.SRT_SERVER_HOST}:${process.env.SRT_SERVER_PORT}`,
 }));
 
+// Global error handler — catches errors forwarded by express-async-errors
+// from any route (e.g. Prisma constraint violations) so a single bad
+// request returns a 500 instead of taking down the whole process.
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[Server] Unhandled route error:', err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 // WebSocket → FFmpeg → SRT bridge
-wss.on('connection', handleSrtBridge);
+//
+// Heartbeat: `ws` has no built-in keepalive. Without this, a connection that
+// dies silently (phone loses signal mid-stream, no TCP FIN/RST ever arrives)
+// never fires 'close' on the server — so srtBridge's `activeStreams` entry for
+// that reporter is never cleaned up, and their next reconnect attempt gets
+// rejected with "Stream already active" against a socket that's actually dead.
+// Pinging every 15s and terminating anything that missed the last pong bounds
+// that stale window to ~15-30s instead of leaving it open indefinitely.
+wss.on('connection', (ws, req) => {
+  (ws as any).isAlive = true;
+  ws.on('pong', () => { (ws as any).isAlive = true; });
+  handleSrtBridge(ws, req);
+});
+
+const heartbeat = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if ((ws as any).isAlive === false) return ws.terminate();
+    (ws as any).isAlive = false;
+    ws.ping();
+  });
+}, 15000);
+
+wss.on('close', () => clearInterval(heartbeat));
+
+// Last-resort net for rejections outside the Express request lifecycle
+// (e.g. WS bridge code, timers) that express-async-errors can't catch —
+// log and keep the process alive instead of crashing all live broadcasts.
+process.on('unhandledRejection', (reason) => {
+  console.error('[Server] Unhandled promise rejection:', reason);
+});
 
 const PORT = parseInt(process.env.PORT || '3000');
 server.listen(PORT, () => {

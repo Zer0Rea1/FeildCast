@@ -8,6 +8,7 @@ interface Participant {
   role: string;
   status: string;
   streamId: string | null;
+  isLive: boolean;
   bitrate: number | null;
   user: { id: string; name: string };
 }
@@ -77,7 +78,7 @@ export default function Dashboard() {
               {/* Reporter HLS video tiles */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
                 {conf.participants
-                  .filter(p => p.role === 'REPORTER' && p.streamId && p.status === 'JOINED')
+                  .filter(p => p.role === 'REPORTER' && p.isLive)
                   .map(p => (
                     <HLSPlayer
                       key={p.id}

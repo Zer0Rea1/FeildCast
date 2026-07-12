@@ -56,7 +56,7 @@ export default function ConferenceDetail() {
   if (!conf) return <div style={{ padding: 24, color: '#888' }}>Loading...</div>;
 
   const liveReporters = conf.participants.filter(
-    (p: any) => p.role === 'REPORTER' && p.streamId && p.status === 'JOINED'
+    (p: any) => p.role === 'REPORTER' && p.isLive
   );
 
   return (
@@ -101,7 +101,7 @@ export default function ConferenceDetail() {
               <span style={{ color: '#666', fontSize: 12, marginLeft: 8 }}>
                 {p.role} · {p.status}
               </span>
-              {p.streamId && (
+              {p.isLive && (
                 <span style={{ color: '#1D9E75', fontSize: 11, marginLeft: 8 }}>● streaming</span>
               )}
             </div>

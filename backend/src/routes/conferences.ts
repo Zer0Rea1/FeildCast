@@ -59,6 +59,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
 // GET /api/conferences/:id
 router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
   const id = req.params.id as string;
+  const { userId, role } = req.user!;
   const conference = await prisma.conference.findUnique({
     where: { id },
     include: {
@@ -69,6 +70,13 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
     },
   });
   if (!conference) return res.status(404).json({ error: 'Not found' });
+
+  const isOwner       = conference.adminId === userId;
+  const isParticipant = conference.participants.some(p => p.userId === userId);
+  if (role === 'ADMIN' ? !isOwner : !isParticipant) {
+    return res.status(403).json({ error: 'Not authorized for this conference' });
+  }
+
   res.json(conference);
 });
 
@@ -80,13 +88,14 @@ router.post('/:id/livekit-token', requireAuth, async (req: AuthRequest, res) => 
   const conference = await prisma.conference.findUnique({ where: { id } });
   if (!conference) return res.status(404).json({ error: 'Not found' });
 
-  // Verify user is a participant
+  // Verify user is a participant, or the owning admin
   const participant = await prisma.participant.findUnique({
     where: { conferenceId_userId: { conferenceId: id, userId } },
     include: { user: true },
   });
-  if (!participant && role !== 'ADMIN') {
-    return res.status(403).json({ error: 'Not a participant of this conference' });
+  const isOwningAdmin = role === 'ADMIN' && conference.adminId === userId;
+  if (!participant && !isOwningAdmin) {
+    return res.status(403).json({ error: 'Not authorized for this conference' });
   }
 
   const participantRole = participant?.role || 'ANCHOR';
@@ -122,6 +131,9 @@ router.get('/:id/streams', requireAuth, requireAdmin, async (req: AuthRequest, r
     },
   });
   if (!conference) return res.status(404).json({ error: 'Not found' });
+  if (conference.adminId !== req.user!.userId) {
+    return res.status(403).json({ error: 'Not authorized for this conference' });
+  }
 
   const srtHost    = process.env.SRT_SERVER_HOST || 'your.srt-server.com';
   const srtPort    = process.env.SRT_SERVER_PORT  || '9998';
@@ -131,6 +143,7 @@ router.get('/:id/streams', requireAuth, requireAdmin, async (req: AuthRequest, r
     reporterName: p.user.name,
     streamId:     p.streamId,
     status:       p.status,
+    isLive:       p.isLive,
     resolution:   p.resolution,
     bitrate:      p.bitrate,
     // mode=caller — playout connects TO the SRT server (which is in listener mode)
@@ -149,6 +162,12 @@ router.get('/:id/streams', requireAuth, requireAdmin, async (req: AuthRequest, r
 // PATCH /api/conferences/:id/end — admin ends conference
 router.patch('/:id/end', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   const id = req.params.id as string;
+  const existing = await prisma.conference.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  if (existing.adminId !== req.user!.userId) {
+    return res.status(403).json({ error: 'Not authorized for this conference' });
+  }
+
   const conference = await prisma.conference.update({
     where: { id },
     data: { status: 'ENDED', endedAt: new Date() },
